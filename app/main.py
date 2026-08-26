@@ -3143,6 +3143,8 @@ def _repair_wifi_power_save_persistence() -> bool:
     """Best-effort runtime repair for persistent WiFi powersave disablement."""
     if platform.system() != "Linux":
         return False
+    if not os.path.exists("/proc/device-tree/model"):
+        return False
 
     helper_ok = wifi_manager.ensure_wifi_powersave_disabled()
     profile_ok = _disable_wifi_power_save_for_saved_connections()

@@ -70,19 +70,64 @@ log() {
     echo "[faxomemo] $*" >&2
 }
 
-setup_venv() {
-    if [ ! -x "$VENV_DIR/bin/python" ]; then
-        log "Creating virtualenv at $VENV_DIR..."
-        if [ "$DRY_RUN" -eq 1 ]; then
-            log "(dry-run) would run: python3 -m venv $VENV_DIR"
-        else
-            python3 -m venv "$VENV_DIR"
+# Some standalone Python distributions (e.g. uv's python-build-standalone) are
+# compiled without Bluetooth support: socket.AF_BLUETOOTH is missing, which
+# breaks the phomemo Bluetooth transport at runtime. System pythons normally
+# have it. Exit 0 if $1 supports it, 1 otherwise (or if $1 isn't runnable).
+python_has_bluetooth() {
+    local py="$1"
+    [ -x "$py" ] || command -v "$py" >/dev/null 2>&1 || return 1
+    "$py" -c 'import socket, sys; sys.exit(0 if hasattr(socket, "AF_BLUETOOTH") else 1)' 2>/dev/null
+}
+
+pick_bluetooth_capable_python() {
+    local candidate
+    for candidate in /usr/bin/python3 python3; do
+        if python_has_bluetooth "$candidate"; then
+            echo "$candidate"
+            return 0
         fi
-    else
-        log "Virtualenv already present at $VENV_DIR."
+    done
+    return 1
+}
+
+setup_venv() {
+    local marker="$VENV_DIR/.faxomemo-deps-installed"
+
+    if [ -x "$VENV_DIR/bin/python" ]; then
+        if python_has_bluetooth "$VENV_DIR/bin/python"; then
+            log "Virtualenv already present at $VENV_DIR."
+        else
+            local replacement
+            if replacement="$(pick_bluetooth_capable_python)"; then
+                log "Recreating .venv: current Python lacks Bluetooth support (falls back to USB-only)."
+                if [ "$DRY_RUN" -eq 1 ]; then
+                    log "(dry-run) would remove $VENV_DIR and recreate with $replacement."
+                else
+                    rm -rf "$VENV_DIR"
+                    "$replacement" -m venv "$VENV_DIR"
+                    rm -f "$marker"
+                fi
+            else
+                log "Warning: no Python with Bluetooth support found; the Bluetooth transport will not work (USB is unaffected). Keeping existing venv."
+            fi
+        fi
     fi
 
-    local marker="$VENV_DIR/.faxomemo-deps-installed"
+    if [ ! -x "$VENV_DIR/bin/python" ]; then
+        local py
+        if ! py="$(pick_bluetooth_capable_python)"; then
+            log "Warning: no Python with Bluetooth support found; the Bluetooth transport will not work (USB is unaffected)."
+            py="python3"
+        fi
+        log "Creating virtualenv at $VENV_DIR (using $py)..."
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log "(dry-run) would run: $py -m venv $VENV_DIR"
+        else
+            "$py" -m venv "$VENV_DIR"
+        fi
+    fi
+
     if [ ! -f "$marker" ]; then
         log "Installing dependencies from requirements.txt..."
         if [ "$DRY_RUN" -eq 1 ]; then

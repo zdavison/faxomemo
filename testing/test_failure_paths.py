@@ -808,9 +808,30 @@ def test_repair_wifi_power_save_persistence_runs_helper_and_profile_migration(
         lambda: calls.append("profiles") or False,
     )
     monkeypatch.setattr(main_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(main_module.os.path, "exists", lambda path: True)
 
     assert main_module._repair_wifi_power_save_persistence() is True
     assert calls == ["helper", "profiles"]
+
+
+def test_repair_wifi_power_save_persistence_skips_off_pi(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        main_module.wifi_manager,
+        "ensure_wifi_powersave_disabled",
+        lambda: calls.append("helper") or True,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_disable_wifi_power_save_for_saved_connections",
+        lambda: calls.append("profiles") or True,
+    )
+    monkeypatch.setattr(main_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(main_module.os.path, "exists", lambda path: False)
+
+    assert main_module._repair_wifi_power_save_persistence() is False
+    assert calls == []
 
 
 def test_try_begin_print_job_respects_hold_reservation(monkeypatch):
