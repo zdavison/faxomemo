@@ -4,7 +4,7 @@ import platform
 import threading
 import time
 
-from app.config import PRINTER_WIDTH
+from app.config import PRINTER_WIDTH, PRINTER_DRIVER
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,15 @@ _is_raspberry_pi = platform.system() == "Linux" and os.path.exists(
     "/proc/device-tree/model"
 )
 
-if _is_raspberry_pi:
+if PRINTER_DRIVER == "phomemo":
+    from app.drivers.printer_phomemo import PrinterDriver
+    from app.drivers.dial_mock import DialDriver
+    from app.drivers.button_mock import ButtonDriver
+elif PRINTER_DRIVER == "mock":
+    from app.drivers.printer_mock import PrinterDriver
+    from app.drivers.dial_mock import DialDriver
+    from app.drivers.button_mock import ButtonDriver
+elif _is_raspberry_pi:
     try:
         from app.drivers.printer_serial import PrinterDriver
         from app.drivers.dial_gpio import DialDriver
