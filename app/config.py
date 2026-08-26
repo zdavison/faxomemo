@@ -8,6 +8,17 @@ import logging
 
 # Constants
 PRINTER_WIDTH = 42
+
+PRINTER_DRIVER = os.environ.get("PC1_PRINTER_DRIVER", "auto").strip().lower()
+PAPER_WIDTH_MM = float(os.environ.get("PC1_PAPER_WIDTH_MM", "57"))
+PAPER_WIDTH_DOTS = int(PAPER_WIDTH_MM * 8) // 8 * 8
+if PRINTER_DRIVER == "phomemo":
+    PRINTER_WIDTH = max(20, PAPER_WIDTH_DOTS * 42 // 384)
+PHOMEMO_TRANSPORT = os.environ.get("PC1_PHOMEMO_TRANSPORT", "usb").strip().lower()
+PHOMEMO_USB_DEVICE = os.environ.get("PC1_PHOMEMO_USB_DEVICE", "/dev/usb/lp0")
+PHOMEMO_BT_ADDRESS = os.environ.get("PC1_PHOMEMO_BT_ADDRESS", "")
+PHOMEMO_MEDIA_TYPE = int(os.environ.get("PC1_PHOMEMO_MEDIA_TYPE", "10"))
+
 DEFAULT_CUTTER_FEED_LINES = 7
 logger = logging.getLogger(__name__)
 _warned_non_posix_sensitive_config = False
