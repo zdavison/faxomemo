@@ -78,6 +78,8 @@ def test_start_ap_mode_retries_then_succeeds(monkeypatch):
 
     monkeypatch.setattr(wifi_manager, "run_command", fake_run_command)
     monkeypatch.setattr(time, "sleep", lambda *_: None)
+    monkeypatch.setattr(wifi_manager.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(wifi_manager.os.path, "exists", lambda path: True)
 
     assert wifi_manager.start_ap_mode(retries=3, retry_delay=0) is True
     assert start_attempts["count"] == 2
@@ -91,8 +93,25 @@ def test_start_ap_mode_returns_false_after_all_retries(monkeypatch):
 
     monkeypatch.setattr(wifi_manager, "run_command", fake_run_command)
     monkeypatch.setattr(time, "sleep", lambda *_: None)
+    monkeypatch.setattr(wifi_manager.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(wifi_manager.os.path, "exists", lambda path: True)
 
     assert wifi_manager.start_ap_mode(retries=2, retry_delay=0) is False
+
+
+def test_start_ap_mode_skips_off_pi(monkeypatch):
+    calls = []
+
+    def fake_run_command(cmd, check=False):  # noqa: ARG001
+        calls.append(cmd)
+        return _completed(returncode=0)
+
+    monkeypatch.setattr(wifi_manager, "run_command", fake_run_command)
+    monkeypatch.setattr(wifi_manager.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(wifi_manager.os.path, "exists", lambda path: False)
+
+    assert wifi_manager.start_ap_mode(retries=3, retry_delay=0) is False
+    assert calls == []
 
 
 def test_ensure_managed_device_password_store_invokes_privileged_script(monkeypatch):

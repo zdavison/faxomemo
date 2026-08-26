@@ -275,6 +275,10 @@ detect_bluetooth() {
 }
 
 write_env_file() {
+    if [ "$TRANSPORT" = "bluetooth" ] && ! [[ "$BT_ADDRESS" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+        echo "Error: refusing to write $ENV_FILE with an invalid Bluetooth address: '$BT_ADDRESS'" >&2
+        exit 1
+    fi
     log "Writing $ENV_FILE..."
     ( umask 177
       {
@@ -292,14 +296,41 @@ write_env_file() {
 TRANSPORT=""
 BT_ADDRESS="${PC1_PHOMEMO_BT_ADDRESS:-}"
 
+# Sources $ENV_FILE and validates it, setting TRANSPORT and (for bluetooth)
+# BT_ADDRESS on success. Must refresh BT_ADDRESS from the just-sourced
+# PC1_PHOMEMO_BT_ADDRESS — it is NOT safe to rely on the top-level BT_ADDRESS
+# default above, which was captured from the outer environment before this
+# function ever runs and would silently clobber the saved value otherwise.
+# Returns 1 (without exiting) if the file is missing required/valid fields,
+# so the caller can fall through to fresh discovery instead of starting a
+# server with a bad or empty transport address.
+load_saved_config() {
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    TRANSPORT="${PC1_PHOMEMO_TRANSPORT:-}"
+
+    if [ "$TRANSPORT" = "bluetooth" ]; then
+        BT_ADDRESS="${PC1_PHOMEMO_BT_ADDRESS:-}"
+        if ! [[ "$BT_ADDRESS" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+            log "Saved config invalid — rerunning discovery"
+            return 1
+        fi
+    elif [ "$TRANSPORT" = "usb" ]; then
+        :
+    else
+        log "Saved config invalid — rerunning discovery"
+        return 1
+    fi
+
+    log "Reusing saved config from $ENV_FILE (use --rediscover to force a fresh scan)."
+    return 0
+}
+
 main() {
     setup_venv
 
-    if [ "$REDISCOVER" -eq 0 ] && [ -z "$TRANSPORT_OVERRIDE" ] && [ "$DRY_RUN" -eq 0 ] && [ -f "$ENV_FILE" ]; then
-        log "Reusing saved config from $ENV_FILE (use --rediscover to force a fresh scan)."
-        # shellcheck disable=SC1090
-        source "$ENV_FILE"
-        TRANSPORT="$PC1_PHOMEMO_TRANSPORT"
+    if [ "$REDISCOVER" -eq 0 ] && [ -z "$TRANSPORT_OVERRIDE" ] && [ "$DRY_RUN" -eq 0 ] && [ -f "$ENV_FILE" ] && load_saved_config; then
+        :
     else
         if [ -n "$TRANSPORT_OVERRIDE" ]; then
             TRANSPORT="$TRANSPORT_OVERRIDE"

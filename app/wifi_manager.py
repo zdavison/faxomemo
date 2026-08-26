@@ -6,6 +6,7 @@ Handles WiFi scanning, connection, and AP mode management.
 import subprocess
 import os
 import logging
+import platform
 from typing import List, Dict, Optional
 
 import app.device_password as device_password
@@ -282,6 +283,9 @@ def connect_to_wifi(ssid: str, password: Optional[str] = None) -> bool:
 def start_ap_mode(retries: int = 3, retry_delay: float = 5.0) -> bool:
     """Start AP mode using the shell script with retry logic."""
     logger = logging.getLogger(__name__)
+    if not (platform.system() == "Linux" and os.path.exists("/proc/device-tree/model")):
+        logger.info("Skipping AP mode start: not running on a Raspberry Pi.")
+        return False
     script_path = os.path.join(
         os.path.dirname(__file__), "..", "scripts", "wifi_ap_nmcli.sh"
     )
