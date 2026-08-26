@@ -52,3 +52,72 @@ def test_make_transport_usb(monkeypatch):
     monkeypatch.setattr(config, "PHOMEMO_USB_DEVICE", "/dev/usb/lp0")
     t = make_transport(config)
     assert isinstance(t, UsbTransport)
+
+def test_usb_transport_short_write_loop(tmp_path, monkeypatch):
+    """Verify short-write handling: os.write returning 1 byte at a time loops until all written."""
+    dev = tmp_path / "lp0"
+    dev.write_bytes(b"")
+    t = UsbTransport(str(dev))
+    t.open()
+
+    # Monkeypatch os.write at the app.drivers.phomemo_transport module level
+    write_calls = []
+    original_os_write = __import__('os').write
+
+    def mock_os_write(fd, data):
+        write_calls.append(len(data))
+        # Write only 1 byte at a time to simulate short-write
+        return original_os_write(fd, data[:1])
+
+    monkeypatch.setattr("app.drivers.phomemo_transport.os.write", mock_os_write)
+
+    # Write 4 bytes, should be split into 1+1+1+1 by mock
+    t.write(b"\x1b\x4e\x00\xff")
+    t.close()
+
+    # Verify all bytes ended up in file
+    assert dev.read_bytes() == b"\x1b\x4e\x00\xff"
+    # Verify write was called multiple times due to short-write
+    assert len(write_calls) >= 4  # At least 4 calls, one per byte
+
+def test_bluetooth_transport_closes_socket_on_connect_failure(monkeypatch):
+    """Verify socket is closed if connect() raises OSError."""
+    import app.drivers.phomemo_transport as bt_module
+
+    class FakeSocket:
+        def __init__(self):
+            self.closed = False
+            self.connect_called = False
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect(self, addr):
+            self.connect_called = True
+            raise OSError("Connection refused")
+
+        def close(self):
+            self.closed = True
+
+    fake_sock = FakeSocket()
+
+    # Mock socket module with necessary constants and socket constructor
+    class MockSocket:
+        AF_BLUETOOTH = 31
+        SOCK_STREAM = 1
+        BTPROTO_RFCOMM = 3
+
+        @staticmethod
+        def socket(*args, **kwargs):
+            return fake_sock
+
+    monkeypatch.setattr(bt_module, "socket", MockSocket())
+
+    t = BluetoothTransport("00:11:22:33:44:55")
+    with pytest.raises(TransportError):
+        t.open()
+
+    # Verify socket.close() was called
+    assert fake_sock.closed
+    assert fake_sock.connect_called
+    assert not t.is_open

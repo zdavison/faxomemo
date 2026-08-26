@@ -40,15 +40,22 @@ class UsbTransport(Transport):
             self._fd = os.open(self.device_path, os.O_WRONLY)
         except OSError as exc:
             self._fd = None
+            logger.warning(f"cannot open {self.device_path}: {exc}")
             raise TransportError(f"cannot open {self.device_path}: {exc}") from exc
 
     def write(self, data: bytes):
         if self._fd is None:
             raise TransportError("USB transport not open")
         try:
-            os.write(self._fd, data)
+            offset = 0
+            while offset < len(data):
+                written = os.write(self._fd, data[offset:])
+                if written == 0:
+                    raise TransportError("USB write returned 0 bytes")
+                offset += written
         except OSError as exc:
             self.close()
+            logger.warning(f"USB write failed: {exc}")
             raise TransportError(f"USB write failed: {exc}") from exc
 
     def close(self):
@@ -73,6 +80,7 @@ class BluetoothTransport(Transport):
     def open(self):
         if not self.mac:
             raise TransportError("PC1_PHOMEMO_BT_ADDRESS is not set")
+        sock = None
         try:
             sock = socket.socket(
                 socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM
@@ -81,7 +89,13 @@ class BluetoothTransport(Transport):
             sock.connect((self.mac, self.channel))
             self._sock = sock
         except OSError as exc:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
             self._sock = None
+            logger.warning(f"bluetooth connect {self.mac} failed: {exc}")
             raise TransportError(f"bluetooth connect {self.mac} failed: {exc}") from exc
 
     def write(self, data: bytes):
