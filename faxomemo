@@ -1,0 +1,269 @@
+#!/bin/bash
+# One-command bootstrap: venv setup, printer transport detection, server start.
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_DIR"
+
+ENV_FILE=".faxomemo.env"
+VENV_DIR=".venv"
+BT_SCAN_TIMEOUT=12
+
+REDISCOVER=0
+DRY_RUN=0
+TRANSPORT_OVERRIDE=""
+
+usage() {
+    cat <<'EOF'
+Usage: ./faxomemo [--help] [--rediscover] [--transport usb|bluetooth] [--dry-run]
+
+Sets up the environment and starts the PC-1 server with the Phomemo M220 driver.
+
+  1. Creates .venv and installs dependencies if missing (idempotent).
+  2. Detects the printer transport: USB if the device file exists, otherwise
+     scans for the M220 over Bluetooth and pairs/trusts it.
+  3. Persists the working config to .faxomemo.env and reuses it on later runs.
+  4. Execs `uvicorn app.main:app --host 0.0.0.0 --port 8000` with
+     PC1_PRINTER_DRIVER=phomemo and the detected transport env vars applied.
+
+Flags:
+  --help                  Show this help and exit.
+  --rediscover            Force a fresh Bluetooth scan, ignoring any saved config.
+  --transport usb|bluetooth
+                          Skip auto-detection and use the given transport.
+  --dry-run               Print setup checks, detection result, and the final
+                          env + command, without pairing, writing .faxomemo.env,
+                          or starting the server.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --help)
+            usage
+            exit 0
+            ;;
+        --rediscover)
+            REDISCOVER=1
+            ;;
+        --transport)
+            shift
+            TRANSPORT_OVERRIDE="${1:-}"
+            if [ "$TRANSPORT_OVERRIDE" != "usb" ] && [ "$TRANSPORT_OVERRIDE" != "bluetooth" ]; then
+                echo "Error: --transport requires 'usb' or 'bluetooth'" >&2
+                exit 1
+            fi
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            ;;
+        *)
+            echo "Error: unknown argument: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+log() {
+    echo "[faxomemo] $*" >&2
+}
+
+setup_venv() {
+    if [ ! -x "$VENV_DIR/bin/python" ]; then
+        log "Creating virtualenv at $VENV_DIR..."
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log "(dry-run) would run: python3 -m venv $VENV_DIR"
+        else
+            python3 -m venv "$VENV_DIR"
+        fi
+    else
+        log "Virtualenv already present at $VENV_DIR."
+    fi
+
+    local marker="$VENV_DIR/.faxomemo-deps-installed"
+    if [ ! -f "$marker" ]; then
+        log "Installing dependencies from requirements.txt..."
+        if [ "$DRY_RUN" -eq 1 ]; then
+            log "(dry-run) would run: $VENV_DIR/bin/pip install -r requirements.txt"
+        else
+            "$VENV_DIR/bin/pip" install -q -r requirements.txt
+            touch "$marker"
+        fi
+    else
+        log "Dependencies already installed."
+    fi
+}
+
+usb_device_path() {
+    echo "${PC1_PHOMEMO_USB_DEVICE:-/dev/usb/lp0}"
+}
+
+detect_usb() {
+    local dev
+    dev="$(usb_device_path)"
+    if [ -e "$dev" ]; then
+        log "Found USB printer device at $dev."
+        return 0
+    fi
+    log "No USB device found at $dev."
+    return 1
+}
+
+bt_devices_matching() {
+    bluetoothctl devices 2>/dev/null | grep -iE 'M220|Mr\.in|Phomemo' || true
+}
+
+bt_scan_and_list() {
+    if ! command -v bluetoothctl >/dev/null 2>&1; then
+        log "bluetoothctl not found; cannot perform Bluetooth discovery."
+        return 1
+    fi
+    log "Scanning for Bluetooth devices (${BT_SCAN_TIMEOUT}s)..."
+    bluetoothctl --timeout "$BT_SCAN_TIMEOUT" scan on >/dev/null 2>&1 || true
+    bt_devices_matching
+}
+
+pair_and_trust() {
+    local mac="$1"
+    log "Pairing with $mac..."
+    local pair_out
+    pair_out="$(bluetoothctl pair "$mac" 2>&1 || true)"
+    if echo "$pair_out" | grep -qiE 'Pairing successful|AlreadyExists|already paired'; then
+        log "Pairing OK ($mac)."
+    else
+        log "Warning: pairing result unclear for $mac:"
+        echo "$pair_out" | sed 's/^/[bluetoothctl] /'
+    fi
+    log "Trusting $mac..."
+    bluetoothctl trust "$mac" >/dev/null 2>&1 || true
+}
+
+detect_bluetooth() {
+    local matches
+    matches="$(bt_scan_and_list)" || return 1
+
+    if [ -z "$matches" ]; then
+        log "No M220/Phomemo devices found via Bluetooth."
+        log "Guidance: power on the printer, then hold the power button to enter pairing mode, and retry."
+        return 1
+    fi
+
+    local count
+    count="$(echo "$matches" | wc -l)"
+
+    local mac name
+    if [ "$count" -eq 1 ]; then
+        mac="$(echo "$matches" | awk '{print $2}')"
+        name="$(echo "$matches" | cut -d' ' -f3-)"
+        log "Found Bluetooth device: $name ($mac)"
+    else
+        echo "Multiple matching Bluetooth devices found:"
+        echo "$matches" | nl -w2 -s') '
+        local choice
+        read -r -p "Select a device [1-$count]: " choice
+        mac="$(echo "$matches" | sed -n "${choice}p" | awk '{print $2}')"
+        name="$(echo "$matches" | sed -n "${choice}p" | cut -d' ' -f3-)"
+        if [ -z "$mac" ]; then
+            echo "Error: invalid selection." >&2
+            return 1
+        fi
+        log "Selected: $name ($mac)"
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "(dry-run) would pair and trust $mac."
+    else
+        pair_and_trust "$mac"
+    fi
+
+    BT_ADDRESS="$mac"
+    return 0
+}
+
+write_env_file() {
+    log "Writing $ENV_FILE..."
+    umask 177
+    {
+        echo "PC1_PRINTER_DRIVER=phomemo"
+        echo "PC1_PHOMEMO_TRANSPORT=$TRANSPORT"
+        if [ "$TRANSPORT" = "usb" ]; then
+            echo "PC1_PHOMEMO_USB_DEVICE=$(usb_device_path)"
+        else
+            echo "PC1_PHOMEMO_BT_ADDRESS=$BT_ADDRESS"
+        fi
+    } > "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+}
+
+TRANSPORT=""
+BT_ADDRESS="${PC1_PHOMEMO_BT_ADDRESS:-}"
+
+main() {
+    setup_venv
+
+    if [ "$REDISCOVER" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && [ -f "$ENV_FILE" ]; then
+        log "Reusing saved config from $ENV_FILE (use --rediscover to force a fresh scan)."
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        TRANSPORT="$PC1_PHOMEMO_TRANSPORT"
+    else
+        if [ -n "$TRANSPORT_OVERRIDE" ]; then
+            TRANSPORT="$TRANSPORT_OVERRIDE"
+            log "Transport overridden to: $TRANSPORT"
+            if [ "$TRANSPORT" = "usb" ]; then
+                detect_usb || log "Proceeding with USB despite no device detected (overridden)."
+            else
+                detect_bluetooth || {
+                    if [ "$DRY_RUN" -eq 0 ]; then
+                        exit 1
+                    fi
+                }
+            fi
+        elif detect_usb; then
+            TRANSPORT="usb"
+        elif detect_bluetooth; then
+            TRANSPORT="bluetooth"
+        else
+            log "Could not detect a printer over USB or Bluetooth."
+            exit 1
+        fi
+
+        if [ "$DRY_RUN" -eq 0 ]; then
+            write_env_file
+        fi
+    fi
+
+    export PC1_PRINTER_DRIVER=phomemo
+    export PC1_PHOMEMO_TRANSPORT="$TRANSPORT"
+    if [ "$TRANSPORT" = "usb" ]; then
+        export PC1_PHOMEMO_USB_DEVICE="$(usb_device_path)"
+    else
+        export PC1_PHOMEMO_BT_ADDRESS="$BT_ADDRESS"
+    fi
+
+    local python_bin="python3"
+    if [ -x "$VENV_DIR/bin/python" ]; then
+        python_bin="$VENV_DIR/bin/python"
+    fi
+
+    log "Final environment:"
+    log "  PC1_PRINTER_DRIVER=$PC1_PRINTER_DRIVER"
+    log "  PC1_PHOMEMO_TRANSPORT=$PC1_PHOMEMO_TRANSPORT"
+    if [ "$TRANSPORT" = "usb" ]; then
+        log "  PC1_PHOMEMO_USB_DEVICE=${PC1_PHOMEMO_USB_DEVICE:-}"
+    else
+        log "  PC1_PHOMEMO_BT_ADDRESS=${PC1_PHOMEMO_BT_ADDRESS:-}"
+    fi
+    log "Command: $python_bin -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "(dry-run) not starting the server."
+        exit 0
+    fi
+
+    exec "$python_bin" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+}
+
+main

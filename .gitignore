@@ -96,3 +96,6 @@ deploy.sh
 
 # Deployment configuration (contains Pi connection details)
 .deploy_config
+
+# faxomemo bootstrap script's persisted detection result
+.faxomemo.env
