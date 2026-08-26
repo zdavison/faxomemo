@@ -17,7 +17,7 @@ if PRINTER_DRIVER == "phomemo":
 PHOMEMO_TRANSPORT = os.environ.get("PC1_PHOMEMO_TRANSPORT", "usb").strip().lower()
 PHOMEMO_USB_DEVICE = os.environ.get("PC1_PHOMEMO_USB_DEVICE", "/dev/usb/lp0")
 PHOMEMO_BT_ADDRESS = os.environ.get("PC1_PHOMEMO_BT_ADDRESS", "")
-PHOMEMO_MEDIA_TYPE = int(os.environ.get("PC1_PHOMEMO_MEDIA_TYPE", "10"))
+PHOMEMO_MEDIA_TYPE = int(os.environ.get("PC1_PHOMEMO_MEDIA_TYPE", "11"))  # 11=continuous, 10=gap labels, 38=black marks (phomemo-tools .drv)
 
 DEFAULT_CUTTER_FEED_LINES = 7
 logger = logging.getLogger(__name__)

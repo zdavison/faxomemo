@@ -148,7 +148,7 @@ def test_encode_bitmap_header_and_footer():
     d, _ = _driver_with_fake_transport()
     img = Image.new("1", (456, 10), 1)  # white
     data = d.encode_bitmap(img)
-    assert data.startswith(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0a")
+    assert data.startswith(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0b")
     assert data.endswith(b"\x1f\xf0\x05\x00\x1f\xf0\x03\x00")
 
 
@@ -168,7 +168,7 @@ def test_encode_bitmap_splits_blocks_over_1200_lines():
     # 57 bytes/line LE, 1200 lines LE (0x04B0), then 57 bytes/line LE, 300 lines LE (0x012C)
     assert b"\x1d\x76\x30\x00\x39\x00\xb0\x04" in data
     assert b"\x1d\x76\x30\x00\x39\x00\x2c\x01" in data
-    header_len = len(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0a")
+    header_len = len(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0b")
     footer_len = len(b"\x1f\xf0\x05\x00\x1f\xf0\x03\x00")
     bytes_per_line = 456 // 8
     block1_len = 8 + bytes_per_line * 1200
@@ -181,8 +181,27 @@ def test_encode_bitmap_black_pixel_sets_bit():
     img = Image.new("1", (8, 1), 1)
     img.putpixel((0, 0), 0)  # leftmost pixel black
     data = d.encode_bitmap(img)
-    row = data[len(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0a") + 8 : -8]
+    row = data[len(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0b") + 8 : -8]
     assert row == b"\x80"
+
+
+def test_encode_bitmap_uses_configured_media_type(monkeypatch):
+    import app.config as config
+    from app.drivers.printer_phomemo import PrinterDriver
+
+    class FakeTransport:
+        def __init__(self):
+            self.written = b""
+            self.is_open = True
+        def open(self): pass
+        def write(self, data): self.written += data
+        def close(self): self.is_open = False
+
+    monkeypatch.setattr(config, "PHOMEMO_MEDIA_TYPE", 38)  # 38 = black marks
+    d = PrinterDriver(width=49, transport=FakeTransport(), width_dots=456)
+    img = Image.new("1", (456, 10), 1)
+    data = d.encode_bitmap(img)
+    assert b"\x1f\x11\x26" in data
 
 
 def test_flush_buffer_propagates_transport_error():
