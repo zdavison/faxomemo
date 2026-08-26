@@ -161,8 +161,22 @@ detect_bluetooth() {
     else
         echo "Multiple matching Bluetooth devices found:"
         echo "$matches" | nl -w2 -s') '
-        local choice
-        read -r -p "Select a device [1-$count]: " choice
+        local choice="" read_status=0 tty_openable=0
+        if ( exec 3<>/dev/tty ) 2>/dev/null; then
+            tty_openable=1
+        fi
+        if [ "$tty_openable" -eq 1 ]; then
+            read -r -p "Select a device [1-$count]: " choice < /dev/tty || read_status=$?
+        elif [ -t 0 ]; then
+            read -r -p "Select a device [1-$count]: " choice || read_status=$?
+        else
+            echo "Error: multiple devices matched and no terminal is available to prompt for a selection." >&2
+            return 1
+        fi
+        if [ "$read_status" -ne 0 ] || ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+            echo "Error: invalid selection." >&2
+            return 1
+        fi
         mac="$(echo "$matches" | sed -n "${choice}p" | awk '{print $2}')"
         name="$(echo "$matches" | sed -n "${choice}p" | cut -d' ' -f3-)"
         if [ -z "$mac" ]; then
@@ -170,6 +184,11 @@ detect_bluetooth() {
             return 1
         fi
         log "Selected: $name ($mac)"
+    fi
+
+    if ! [[ "$mac" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+        echo "Error: parsed value is not a valid MAC address: $mac" >&2
+        return 1
     fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -184,16 +203,16 @@ detect_bluetooth() {
 
 write_env_file() {
     log "Writing $ENV_FILE..."
-    umask 177
-    {
-        echo "PC1_PRINTER_DRIVER=phomemo"
-        echo "PC1_PHOMEMO_TRANSPORT=$TRANSPORT"
-        if [ "$TRANSPORT" = "usb" ]; then
-            echo "PC1_PHOMEMO_USB_DEVICE=$(usb_device_path)"
-        else
-            echo "PC1_PHOMEMO_BT_ADDRESS=$BT_ADDRESS"
-        fi
-    } > "$ENV_FILE"
+    ( umask 177
+      {
+          echo "PC1_PRINTER_DRIVER=phomemo"
+          echo "PC1_PHOMEMO_TRANSPORT=$TRANSPORT"
+          if [ "$TRANSPORT" = "usb" ]; then
+              echo "PC1_PHOMEMO_USB_DEVICE=$(usb_device_path)"
+          else
+              echo "PC1_PHOMEMO_BT_ADDRESS=$BT_ADDRESS"
+          fi
+      } > "$ENV_FILE" )
     chmod 600 "$ENV_FILE"
 }
 
@@ -203,7 +222,7 @@ BT_ADDRESS="${PC1_PHOMEMO_BT_ADDRESS:-}"
 main() {
     setup_venv
 
-    if [ "$REDISCOVER" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && [ -f "$ENV_FILE" ]; then
+    if [ "$REDISCOVER" -eq 0 ] && [ -z "$TRANSPORT_OVERRIDE" ] && [ "$DRY_RUN" -eq 0 ] && [ -f "$ENV_FILE" ]; then
         log "Reusing saved config from $ENV_FILE (use --rediscover to force a fresh scan)."
         # shellcheck disable=SC1090
         source "$ENV_FILE"
