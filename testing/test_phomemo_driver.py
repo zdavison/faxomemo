@@ -165,6 +165,15 @@ def test_encode_bitmap_splits_blocks_over_1200_lines():
     img = Image.new("1", (456, 1500), 1)
     data = d.encode_bitmap(img)
     assert data.count(b"\x1d\x76\x30\x00") == 2  # 1200 + 300
+    # 57 bytes/line LE, 1200 lines LE (0x04B0), then 57 bytes/line LE, 300 lines LE (0x012C)
+    assert b"\x1d\x76\x30\x00\x39\x00\xb0\x04" in data
+    assert b"\x1d\x76\x30\x00\x39\x00\x2c\x01" in data
+    header_len = len(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0a")
+    footer_len = len(b"\x1f\xf0\x05\x00\x1f\xf0\x03\x00")
+    bytes_per_line = 456 // 8
+    block1_len = 8 + bytes_per_line * 1200
+    block2_len = 8 + bytes_per_line * 300
+    assert len(data) == header_len + block1_len + block2_len + footer_len
 
 
 def test_encode_bitmap_black_pixel_sets_bit():
@@ -174,3 +183,20 @@ def test_encode_bitmap_black_pixel_sets_bit():
     data = d.encode_bitmap(img)
     row = data[len(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0a") + 8 : -8]
     assert row == b"\x80"
+
+
+def test_flush_buffer_propagates_transport_error():
+    from app.drivers.printer_phomemo import PrinterDriver
+    from app.drivers.phomemo_transport import TransportError
+
+    class FailingTransport:
+        is_open = True
+        def open(self): pass
+        def write(self, data):
+            raise TransportError("printer unplugged")
+        def close(self): pass
+
+    d = PrinterDriver(width=49, transport=FailingTransport(), width_dots=456)
+    d.print_body("hello")
+    with pytest.raises(TransportError):
+        d.flush_buffer()

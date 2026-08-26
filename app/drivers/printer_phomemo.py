@@ -11,6 +11,9 @@ from app.drivers.printer_serial import PrinterDriver as SerialPrinterDriver
 logger = logging.getLogger(__name__)
 
 MAX_LINES_PER_BLOCK = 1200  # M220 firmware rejects GS v 0 blocks taller than this
+MAX_IDLE_WAIT = 15.0  # upper bound on wait_for_idle's lines/200 estimate
+
+_INVERT_TABLE = bytes(b ^ 0xFF for b in range(256))
 
 
 class PrinterDriver(SerialPrinterDriver):
@@ -28,6 +31,9 @@ class PrinterDriver(SerialPrinterDriver):
         self.media_type = config.PHOMEMO_MEDIA_TYPE
         self.transport = transport if transport is not None else make_transport(config)
         self._transport_lock = threading.RLock()
+        # M220 has no cutter; the inherited post-flush feed_direct() would
+        # otherwise send ESC/POS feed bytes it doesn't understand.
+        self.cutter_feed_dots = 0
 
     # --- transport plumbing (replaces serial) ---
 
@@ -38,7 +44,7 @@ class PrinterDriver(SerialPrinterDriver):
         return False
 
     def wait_for_idle(self, timeout: float = 3.0, quiet_period: float = 0.35):
-        time.sleep(min(timeout, quiet_period))
+        time.sleep(max(quiet_period, min(timeout, MAX_IDLE_WAIT)))
 
     def is_available(self) -> bool:
         with self._transport_lock:
@@ -64,7 +70,21 @@ class PrinterDriver(SerialPrinterDriver):
         return b""
 
     def close(self):
-        self.transport.close()
+        with self._transport_lock:
+            self.transport.close()
+
+    def _ensure_ascii_mode(self):
+        pass
+
+    def _apply_ascii_settings(self):
+        pass
+
+    def clear_hardware_buffer(self):
+        """Clear the software print buffer only; M220 has no ESC/POS reset."""
+        with self._io_lock:
+            self.print_buffer.clear()
+            self.lines_printed = 0
+            self.max_lines = 0
 
     # --- M220 protocol ---
 
@@ -83,7 +103,8 @@ class PrinterDriver(SerialPrinterDriver):
             width = new_width
 
         img = img.convert("1")
-        pixels = img.tobytes()
+        # PIL '1' mode packs white=1/black=0 (MSB first); protocol wants black=1.
+        pixels = img.tobytes().translate(_INVERT_TABLE)
         bytes_per_line = width // 8
 
         out = bytearray()
@@ -101,8 +122,7 @@ class PrinterDriver(SerialPrinterDriver):
 
             chunk_start = line * row_bytes
             chunk_end = chunk_start + lines * row_bytes
-            # PIL '1' mode packs white=1/black=0 (MSB first); protocol wants black=1.
-            out += bytes(b ^ 0xFF for b in pixels[chunk_start:chunk_end])
+            out += pixels[chunk_start:chunk_end]
 
             line += lines
 
@@ -112,10 +132,7 @@ class PrinterDriver(SerialPrinterDriver):
     def _send_bitmap(self, img: Image.Image):
         if img is None:
             return
-        try:
-            data = self.encode_bitmap(img)
-            logger.debug("Sending bitmap: %dx%d (%d bytes)", img.width, img.height, len(data))
-            self._write(data)
-            self.wait_for_idle(timeout=img.height / 200)
-        except Exception:
-            logger.exception("Phomemo bitmap send failed")
+        data = self.encode_bitmap(img)
+        logger.debug("Sending bitmap: %dx%d (%d bytes)", img.width, img.height, len(data))
+        self._write(data)
+        self.wait_for_idle(timeout=img.height / 200)
