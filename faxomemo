@@ -111,8 +111,35 @@ detect_usb() {
     return 1
 }
 
-bt_devices_matching() {
-    bluetoothctl devices 2>/dev/null | grep -iE 'M220|Mr\.in|Phomemo' || true
+# The M220 sometimes advertises its serial number (e.g. "Q198G5BR6410063")
+# instead of a recognizable name, so name matching alone is unreliable.
+# Fall back to bluez's device-class rendering: `bluetoothctl info <mac>`
+# reports `Icon: printer` for the imaging/printer class, which is the
+# reliable signal for this hardware.
+bt_is_printer_by_class() {
+    local mac="$1"
+    local info
+    info="$(bluetoothctl info "$mac" 2>/dev/null || true)"
+    echo "$info" | grep -q 'Icon: printer'
+}
+
+bt_candidate_devices() {
+    local all line mac name candidates=""
+    all="$(bluetoothctl devices 2>/dev/null || true)"
+    [ -z "$all" ] && return 0
+
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        mac="$(echo "$line" | awk '{print $2}')"
+        name="$(echo "$line" | cut -d' ' -f3-)"
+        if echo "$name" | grep -qiE 'M220|Mr\.in|Phomemo'; then
+            candidates="${candidates}${line}"$'\n'
+        elif bt_is_printer_by_class "$mac"; then
+            candidates="${candidates}${line}"$'\n'
+        fi
+    done <<< "$all"
+
+    printf '%s' "$candidates" | sed '/^$/d' | awk '!seen[$2]++'
 }
 
 bt_scan_and_list() {
@@ -122,7 +149,7 @@ bt_scan_and_list() {
     fi
     log "Scanning for Bluetooth devices (${BT_SCAN_TIMEOUT}s)..."
     bluetoothctl --timeout "$BT_SCAN_TIMEOUT" scan on >/dev/null 2>&1 || true
-    bt_devices_matching
+    bt_candidate_devices
 }
 
 pair_and_trust() {
@@ -147,6 +174,7 @@ detect_bluetooth() {
     if [ -z "$matches" ]; then
         log "No M220/Phomemo devices found via Bluetooth."
         log "Guidance: power on the printer, then hold the power button to enter pairing mode, and retry."
+        log "Note: the printer may advertise its serial number instead of a model name; run 'bluetoothctl devices' to check for an unfamiliar device near you."
         return 1
     fi
 
