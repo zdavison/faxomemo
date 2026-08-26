@@ -121,3 +121,56 @@ def test_bluetooth_transport_closes_socket_on_connect_failure(monkeypatch):
     assert fake_sock.closed
     assert fake_sock.connect_called
     assert not t.is_open
+
+
+# --- M220 raster protocol (Task 3) ---
+
+from PIL import Image
+
+
+def _driver_with_fake_transport(width_dots=456):
+    from app.drivers.printer_phomemo import PrinterDriver
+
+    class FakeTransport:
+        def __init__(self):
+            self.written = b""
+            self.is_open = True
+        def open(self): pass
+        def write(self, data): self.written += data
+        def close(self): self.is_open = False
+
+    t = FakeTransport()
+    d = PrinterDriver(width=49, transport=t, width_dots=width_dots)
+    return d, t
+
+
+def test_encode_bitmap_header_and_footer():
+    d, _ = _driver_with_fake_transport()
+    img = Image.new("1", (456, 10), 1)  # white
+    data = d.encode_bitmap(img)
+    assert data.startswith(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0a")
+    assert data.endswith(b"\x1f\xf0\x05\x00\x1f\xf0\x03\x00")
+
+
+def test_encode_bitmap_raster_block_header():
+    d, _ = _driver_with_fake_transport()
+    img = Image.new("1", (456, 10), 1)
+    data = d.encode_bitmap(img)
+    # GS v 0, mode 0, 57 bytes/line LE, 10 lines LE
+    assert b"\x1d\x76\x30\x00\x39\x00\x0a\x00" in data
+
+
+def test_encode_bitmap_splits_blocks_over_1200_lines():
+    d, _ = _driver_with_fake_transport()
+    img = Image.new("1", (456, 1500), 1)
+    data = d.encode_bitmap(img)
+    assert data.count(b"\x1d\x76\x30\x00") == 2  # 1200 + 300
+
+
+def test_encode_bitmap_black_pixel_sets_bit():
+    d, _ = _driver_with_fake_transport(width_dots=8)
+    img = Image.new("1", (8, 1), 1)
+    img.putpixel((0, 0), 0)  # leftmost pixel black
+    data = d.encode_bitmap(img)
+    row = data[len(b"\x1b\x4e\x0d\x05\x1b\x4e\x04\x0a\x1f\x11\x0a") + 8 : -8]
+    assert row == b"\x80"
