@@ -1,0 +1,30 @@
+{
+  "data": {
+    "summaryCollectionContent": {
+      "collectionItems": [
+        {
+          "collectionItems": [
+            {
+              "content": {
+                "mobileSummary": {
+                  "headline": {"text": "Markets Rally on Rate Hopes"},
+                  "description": {"content": {"text": "Stocks climbed as traders bet on cuts."}}
+                },
+                "sourceUrl": "https://www.wsj.com/finance/markets-rally"
+              }
+            },
+            {
+              "content": {
+                "mobileSummary": {
+                  "headline": {"text": "Second Story"},
+                  "description": {"content": null}
+                },
+                "sourceUrl": "https://www.wsj.com/business/second-story"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "data": {
+    "mobileIssuesByMasthead": [
+      {
+        "datedLabel": "Wednesday, August 27, 2025",
+        "publishedDateUtc": "2025-08-27T00:00:00Z",
+        "sections": [
+          {"label": "Front Section", "key": "sec-front"},
+          {"label": "Business & Finance", "key": "sec-biz"},
+          {"label": "Opinion", "key": "sec-opinion"},
+          {"label": "Back Matter", "key": "sec-back"}
+        ]
+      },
+      {
+        "datedLabel": "Tuesday, August 26, 2025",
+        "publishedDateUtc": "2025-08-26T00:00:00Z",
+        "sections": []
+      }
+    ]
+  }
+}

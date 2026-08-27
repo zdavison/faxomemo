@@ -44,9 +44,10 @@ def test_loader_applies_calibre_defaults():
     assert spec.max_articles_per_feed == 100
 
 
-def test_loader_rejects_parse_index_recipe():
-    with pytest.raises(recipes.RecipeNeedsCalibre):
-        recipes.load_recipe_file(FIXTURES / "parse_index.recipe")
+def test_loader_accepts_parse_index_recipe_as_index_spec():
+    spec = recipes.load_recipe_file(FIXTURES / "parse_index.recipe")
+    assert isinstance(spec, recipes.IndexRecipeSpec)
+    assert spec.title == "Index News"
 
 
 def test_loader_reports_broken_recipe():
@@ -398,15 +399,14 @@ def test_receipt_partial_failure_prints_error_line_and_other_sources(monkeypatch
 
     printer = _RecordingPrinter()
     sources = "\n".join(
-        [str(FIXTURES / "simple.recipe"), str(FIXTURES / "parse_index.recipe")]
+        [str(FIXTURES / "simple.recipe"), str(FIXTURES / "broken.recipe")]
     )
     newsstand.format_newsstand_receipt(
         printer, {"sources": sources, "articles_per_source": 2}, "NEWSSTAND"
     )
 
     assert any(
-        body == "Index News: recipe needs calibre (parse_index)"
-        for body in printer.bodies
+        body.startswith("broken: recipe failed to load") for body in printer.bodies
     )
     assert printer.article_blocks, "healthy source should still print articles"
 
