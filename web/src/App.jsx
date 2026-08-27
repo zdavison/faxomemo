@@ -5,7 +5,6 @@ import ChannelList from './components/ChannelList';
 import AddModuleModal from './components/AddModuleModal';
 import EditModuleModal from './components/EditModuleModal';
 import ScheduleModal from './components/ScheduleModal';
-import APInstructionsModal from './components/APInstructionsModal';
 import StatusMessage from './components/StatusMessage';
 import ResetSettingsButton from './components/ResetSettingsButton';
 import SettingsLogin from './components/SettingsLogin';
@@ -50,7 +49,6 @@ function App() {
   const [showEditModuleModal, setShowEditModuleModal] = useState(null); // module ID or null
   const [editingModule, setEditingModule] = useState(null); // Local copy of module being edited
   const [showScheduleModal, setShowScheduleModal] = useState(null); // channel position or null
-  const [showAPInstructions, setShowAPInstructions] = useState(false);
   const [authInfo, setAuthInfo] = useState(null);
   const [authError, setAuthError] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
@@ -762,17 +760,6 @@ function App() {
     saveGlobalSettings({ channels: newChannels });
   };
 
-  const triggerAPMode = async () => {
-    try {
-      const response = await adminAuthFetch('/api/wifi/ap-mode', { method: 'POST' });
-      if (!response.ok) throw new Error('Failed to activate AP mode');
-      setStatus({ type: 'success', message: 'AP mode activating...' });
-      setShowAPInstructions(true);
-    } catch {
-      setStatus({ type: 'error', message: 'Failed to activate AP mode' });
-    }
-  };
-
   const handleTabKeyDown = (event, currentTab) => {
     const orderedTabs = ['general', 'channels'];
     const currentIndex = orderedTabs.indexOf(currentTab);
@@ -818,7 +805,7 @@ function App() {
       style={{ backgroundColor: 'var(--color-bg-base)', color: 'var(--color-text-main)' }}>
       <div className='mb-8 pt-4 pb-2'>
         <h1 className='text-3xl sm:text-4xl leading-none font-bold tracking-tighter' style={{ color: 'var(--color-text-main)' }}>
-          PC-1 SETTINGS
+          FAXOMEMO SETTINGS
         </h1>
       </div>
 
@@ -895,7 +882,6 @@ function App() {
               selectLocation={selectLocation}
               settings={settings}
               saveGlobalSettings={saveGlobalSettings}
-              triggerAPMode={triggerAPMode}
               wifiStatus={wifiStatus}
               onConfigImported={applyImportedConfig}
             />
@@ -1003,8 +989,6 @@ function App() {
           timeFormat={settings.time_format}
           timezone={settings.timezone}
         />
-
-        <APInstructionsModal show={showAPInstructions} wifiStatus={wifiStatus} />
 
         <StatusMessage status={status} />
       </div>

@@ -12,7 +12,6 @@ import { adminAuthFetch } from '../lib/adminAuthFetch';
 const GeneralSettings = ({
   settings,
   saveGlobalSettings,
-  triggerAPMode,
   wifiStatus,
   onConfigImported,
 }) => {
@@ -42,39 +41,8 @@ const GeneralSettings = ({
   const devicePasswordUnavailableMessage =
     devicePasswordSource === 'managed_fallback'
       ? 'Password changes will be available after managed device credential storage is provisioned on this unit.'
-      : 'Device Password changes are only available on managed PC-1 builds.';
+      : 'Device Password changes are only available on managed faxomemo builds.';
 
-  // SSH management state
-  const [sshStatus, setSshStatus] = useState(null);
-  const [sshLoading, setSshLoading] = useState(false);
-  const [sshMessage, setSshMessage] = useState({ type: '', message: '' });
-
-  // Reboot state
-  const [rebootingDevice, setRebootingDevice] = useState(false);
-
-  // Update check state
-  const [updateStatus, setUpdateStatus] = useState(null);
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
-  const [installingUpdate, setInstallingUpdate] = useState(false);
-  const [updateMessage, setUpdateMessage] = useState({ type: '', message: '' });
-  const [currentVersion, setCurrentVersion] = useState(null);
-  const [installMode, setInstallMode] = useState(null);
-  const [updateProgress, setUpdateProgress] = useState({ stage: '', progress: 0 });
-  const releaseChannel = settings?.release_channel === 'beta' ? 'beta' : 'stable';
-  const releaseNotes = typeof updateStatus?.release_notes === 'string' ? updateStatus.release_notes.trim() : '';
-  const releaseNotesTitle = updateStatus?.latest_version
-    ? `Patch Notes for ${updateStatus.latest_version}`
-    : 'Patch Notes';
-  const publishedDate = updateStatus?.published_at
-    ? new Date(updateStatus.published_at)
-    : null;
-  const publishedDateLabel = publishedDate && !Number.isNaN(publishedDate.getTime())
-    ? publishedDate.toLocaleDateString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      })
-    : '';
   const [configTransferMessage, setConfigTransferMessage] = useState({ type: '', message: '', warnings: [] });
   const [exportingConfig, setExportingConfig] = useState(false);
   const [importingConfig, setImportingConfig] = useState(false);
@@ -113,24 +81,6 @@ const GeneralSettings = ({
     }
   }, [settings]);
 
-  // Fetch SSH status on mount
-  useEffect(() => {
-    const fetchSshStatus = async () => {
-      try {
-        const response = await fetch('/api/system/ssh/status');
-        const data = await response.json();
-        setSshStatus(data);
-      } catch (err) {
-        console.error('Error fetching SSH status:', err);
-      }
-    };
-
-    fetchSshStatus();
-    // Refresh SSH status every 30 seconds
-    const interval = setInterval(fetchSshStatus, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
   useEffect(() => {
     const fetchDevicePasswordStatus = async () => {
       try {
@@ -143,26 +93,6 @@ const GeneralSettings = ({
     };
 
     fetchDevicePasswordStatus();
-  }, []);
-
-  // Fetch current version on mount
-  useEffect(() => {
-    const fetchCurrentVersion = async () => {
-      try {
-        const response = await fetch('/api/system/version');
-        const data = await response.json();
-        if (data.version) {
-          setCurrentVersion(data.version);
-        }
-        if (data.install_mode) {
-          setInstallMode(data.install_mode);
-        }
-      } catch (err) {
-        console.error('Error fetching current version:', err);
-      }
-    };
-
-    fetchCurrentVersion();
   }, []);
 
   const getApiError = (data, fallback) => {
@@ -190,91 +120,6 @@ const GeneralSettings = ({
 
     const filenameMatch = headerValue.match(/filename=\"?([^\";]+)\"?/i);
     return filenameMatch?.[1] || '';
-  };
-
-  const waitForServiceRestartAndReload = () => {
-    const maxReloadTimeout = setTimeout(() => {
-      window.location.reload();
-    }, 45000);
-
-    setTimeout(() => {
-      setUpdateProgress({ stage: 'Waiting for service to restart...', progress: 75 });
-
-      let attempts = 0;
-      const maxAttempts = 30;
-
-      const checkService = async () => {
-        attempts++;
-
-        const progress = Math.min(75 + Math.floor((attempts / maxAttempts) * 20), 95);
-        setUpdateProgress({ stage: 'Waiting for service to restart...', progress });
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
-
-        try {
-          const healthCheck = await fetch('/api/health', {
-            method: 'GET',
-            signal: controller.signal,
-          });
-          clearTimeout(timeoutId);
-
-          if (healthCheck.ok) {
-            setUpdateProgress({ stage: 'Service ready! Reloading page...', progress: 100 });
-            clearTimeout(maxReloadTimeout);
-            setTimeout(() => window.location.reload(), 500);
-            return;
-          }
-        } catch {
-          clearTimeout(timeoutId);
-        }
-
-        if (attempts < maxAttempts) {
-          setTimeout(checkService, 1000);
-        } else {
-          setUpdateProgress({ stage: 'Reloading page...', progress: 100 });
-          clearTimeout(maxReloadTimeout);
-          setTimeout(() => window.location.reload(), 500);
-        }
-      };
-
-      checkService();
-    }, 5000);
-  };
-
-  const handleDeviceReboot = async () => {
-    if (!confirm('Reboot the device now? It will be offline for about 30–60 seconds.')) return;
-
-    setRebootingDevice(true);
-    try {
-      await adminAuthFetch('/api/system/reboot', { method: 'POST' });
-    } catch {
-      // Network error is expected as the device shuts down
-    }
-
-    // Wait for device to go offline, then poll until it comes back
-    setTimeout(() => {
-      const maxTimeout = setTimeout(() => window.location.reload(), 120000);
-
-      const poll = async () => {
-        const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort(), 2000);
-        try {
-          const res = await fetch('/api/health', { signal: controller.signal });
-          clearTimeout(tid);
-          if (res.ok) {
-            clearTimeout(maxTimeout);
-            window.location.reload();
-            return;
-          }
-        } catch {
-          clearTimeout(tid);
-        }
-        setTimeout(poll, 2000);
-      };
-
-      poll();
-    }, 15000);
   };
 
   const handleExportConfig = async () => {
@@ -354,61 +199,6 @@ const GeneralSettings = ({
     } finally {
       setImportingConfig(false);
     }
-  };
-
-  const runRestartingUpdateAction = async ({
-    endpoint,
-    confirmMessage,
-    initialStage,
-    successStage,
-    failureFallback,
-  }) => {
-    if (!confirm(confirmMessage)) {
-      return;
-    }
-
-    setInstallingUpdate(true);
-    setUpdateMessage({ type: '', message: '' });
-    setUpdateProgress({ stage: initialStage, progress: 10 });
-
-    let progressInterval = null;
-    try {
-      progressInterval = setInterval(() => {
-        setUpdateProgress((prev) => {
-          if (prev.progress < 50) {
-            return { ...prev, progress: Math.min(prev.progress + 2, 50) };
-          }
-          return prev;
-        });
-      }, 500);
-
-      const response = await adminAuthFetch(endpoint, {
-        method: 'POST',
-      });
-
-      clearInterval(progressInterval);
-      setUpdateProgress({ stage: successStage, progress: 60 });
-
-      const data = await response.json();
-      if (data.success) {
-        setUpdateProgress({ stage: 'Service restarting...', progress: 70 });
-        setUpdateStatus(null);
-      } else {
-        setUpdateProgress({ stage: '', progress: 0 });
-        setUpdateMessage({ type: 'error', message: getApiError(data, failureFallback) });
-        setInstallingUpdate(false);
-        return;
-      }
-    } catch {
-      if (progressInterval) {
-        clearInterval(progressInterval);
-      }
-      // Network error is expected during restart - treat as success
-      setUpdateProgress({ stage: 'Service restarting...', progress: 70 });
-      setUpdateStatus(null);
-    }
-
-    waitForServiceRestartAndReload();
   };
 
   const handleDevicePasswordChange = async () => {
@@ -644,266 +434,6 @@ const GeneralSettings = ({
 
   return (
     <div className='space-y-4'>
-      {/* Update Check */}
-      <div className='rounded-xl p-[4px] shadow-lg' style={{ background: inkGradients[5] || inkGradients[0] }}>
-        <div className='bg-bg-card rounded-lg p-4 flex flex-col'>
-          <h3 className='font-bold text-black  text-lg tracking-tight mb-3'>Updates</h3>
-          <p className='text-sm text-gray-600 mb-4 '>
-            Check for software updates and keep your PC-1 running the latest version.
-          </p>
-
-          {/* Current Version Display */}
-          {currentVersion && (
-            <div className='mb-4 text-sm'>
-              <span className='text-gray-600 font-bold'>Current Version: </span>
-              <span className='font-mono font-bold text-black'>{currentVersion}</span>
-            </div>
-          )}
-
-          <div className='mb-4 flex items-start justify-between gap-4'>
-            <div className='flex-1'>
-              <div className='text-sm font-bold text-black'>Release Channel</div>
-              {installMode === 'development' && (
-                <p className='text-xs text-gray-600 mt-1 '>
-                  This takes effect after converting this unit to production OTA updates.
-                </p>
-              )}
-            </div>
-            <div className='inline-flex rounded-full border-2 border-black bg-white p-1 shadow-sm'>
-              {['stable', 'beta'].map((channel) => {
-                const selected = releaseChannel === channel;
-                return (
-                  <button
-                    key={channel}
-                    type='button'
-                    className={`rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide transition ${
-                      selected
-                        ? 'active-inverted'
-                        : 'bg-transparent text-black hover:bg-gray-100'
-                    }`}
-                    aria-pressed={selected}
-                    onClick={() => {
-                      if (selected) return;
-                      if (
-                        channel === 'beta' &&
-                        !window.confirm(
-                          'Switch to beta releases? Beta updates may be less stable than regular releases and could include unfinished changes.',
-                        )
-                      ) {
-                        return;
-                      }
-                      setUpdateStatus(null);
-                      setUpdateMessage({ type: '', message: '' });
-                      saveGlobalSettings({ release_channel: channel });
-                    }}
-                  >
-                    {channel}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {installMode === 'development' && (
-            <div className='mb-4'>
-              <div className='flex items-center justify-between gap-3'>
-                <div className='text-xs text-gray-600'>
-                  This unit is using git-based updates.
-                </div>
-                {!installingUpdate && (
-                  <button
-                    type='button'
-                    onClick={() =>
-                      runRestartingUpdateAction({
-                        endpoint: '/api/system/updates/convert-to-production',
-                        confirmMessage:
-                          'Convert this unit to production mode now? This installs the latest published release, removes git update mode, and restarts the device automatically.',
-                        initialStage: 'Converting to production...',
-                        successStage: 'Production release installed! Restarting service...',
-                        failureFallback: 'Conversion failed. Please try again.',
-                      })
-                    }
-                    className='text-xs font-bold text-black underline underline-offset-2 hover:text-gray-700 transition-colors cursor-pointer'>
-                    Convert to Production
-                  </button>
-                )}
-              </div>
-              <p className='text-xs text-gray-600 mt-2 '>
-                Switch this unit from git-based updates to release-based OTA updates using the latest published release.
-              </p>
-            </div>
-          )}
-
-          {updateStatus && !installingUpdate && (
-            <div className={`mb-4 p-3 rounded-lg text-sm ${
-              updateStatus.up_to_date 
-                ? 'bg-gray-100 text-black' 
-                : 'bg-white text-black border-2 border-gray-300 border-dashed'
-            }`}>
-              <div className='font-bold mb-1'>{updateStatus.message}</div>
-              <div className='text-xs text-gray-600 mt-1'>
-                {updateStatus.up_to_date ? (
-                  <>Current version: <span className='font-mono'>{updateStatus.current_version || 'unknown'}</span></>
-                ) : (
-                  <>
-                    Current: <span className='font-mono'>{updateStatus.current_version || 'unknown'}</span> → 
-                    Latest: <span className='font-mono'>{updateStatus.latest_version || 'unknown'}</span>
-                    {updateStatus.commits_behind > 0 && (
-                      <> ({updateStatus.commits_behind} {updateStatus.commits_behind === 1 ? 'update' : 'updates'})</>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          {updateStatus && !installingUpdate && !updateStatus.error && (
-            <details className='mb-4 rounded-lg border-2 border-gray-300 bg-white p-3 text-sm text-black' open={Boolean(updateStatus.available)}>
-              <summary className='cursor-pointer select-none font-bold'>
-                {releaseNotesTitle}
-              </summary>
-              <div className='mt-3 space-y-2'>
-                {(updateStatus.release_name || publishedDateLabel || updateStatus.is_prerelease) && (
-                  <div className='flex flex-wrap items-center gap-2 text-xs text-gray-600'>
-                    {updateStatus.release_name && (
-                      <span className='font-bold text-black'>{updateStatus.release_name}</span>
-                    )}
-                    {publishedDateLabel && (
-                      <span>{publishedDateLabel}</span>
-                    )}
-                    {updateStatus.is_prerelease && (
-                      <span className='rounded-full border border-gray-400 px-2 py-0.5 font-bold uppercase tracking-wide'>
-                        Beta
-                      </span>
-                    )}
-                  </div>
-                )}
-                <div className='max-h-64 overflow-auto rounded border border-gray-200 bg-gray-50 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap'>
-                  {releaseNotes || 'No patch notes were published for this release.'}
-                  {updateStatus.release_notes_truncated ? '\n\nNotes were shortened for display.' : ''}
-                </div>
-                {updateStatus.release_url && (
-                  <a
-                    href={updateStatus.release_url}
-                    target='_blank'
-                    rel='noreferrer'
-                    className='inline-block text-xs font-bold text-black underline underline-offset-2 hover:text-gray-700'>
-                    Open GitHub Release
-                  </a>
-                )}
-              </div>
-            </details>
-          )}
-
-          {updateMessage.message && !installingUpdate && updateMessage.type === 'error' && (
-            <div className='mb-4 p-3 rounded-lg text-sm border-2 bg-white text-black border-black border-dashed'>
-              <span className='font-bold mr-2'>ERROR:</span>
-              {updateMessage.message}
-            </div>
-          )}
-
-          {/* Update Progress Bar */}
-          {installingUpdate && (
-            <div className='mb-4 p-4 bg-gray-50 border-2 border-gray-300 rounded-lg'>
-              <div className='flex items-center justify-between mb-2'>
-                <span className='text-sm font-bold text-black'>{updateProgress.stage || 'Installing update...'}</span>
-                <span className='text-xs text-gray-600 font-mono'>{updateProgress.progress}%</span>
-              </div>
-              <div className='w-full bg-gray-200 rounded-full h-2.5 overflow-hidden'>
-                <div 
-                  className='bg-black h-2.5 rounded-full transition-all duration-300 ease-out'
-                  style={{ width: `${updateProgress.progress}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {!installingUpdate && (
-            <div className='flex gap-3'>
-              <PrimaryButton
-                onClick={async () => {
-                  setCheckingUpdates(true);
-                  setUpdateMessage({ type: '', message: '' });
-                  try {
-                    const response = await fetch('/api/system/updates/check');
-                    const data = await response.json();
-                    setUpdateStatus(data);
-                    if (data.error) {
-                      setUpdateMessage({ type: 'error', message: data.error });
-                      setTimeout(() => setUpdateMessage({ type: '', message: '' }), 5000);
-                    }
-                  } catch {
-                    setUpdateMessage({ type: 'error', message: 'Could not check for updates. Check your internet connection.' });
-                    setTimeout(() => setUpdateMessage({ type: '', message: '' }), 5000);
-                  } finally {
-                    setCheckingUpdates(false);
-                  }
-                }}
-                disabled={checkingUpdates}
-                loading={checkingUpdates}
-                className='flex-1'>
-                Check for Updates
-              </PrimaryButton>
-
-            {updateStatus && updateStatus.available && !installingUpdate && (
-              <PrimaryButton
-                onClick={() =>
-                  runRestartingUpdateAction({
-                    endpoint: '/api/system/updates/install',
-                    confirmMessage:
-                      'Install the update now? The device will restart automatically. The page will refresh automatically once the update is complete.',
-                    initialStage: 'Installing update...',
-                    successStage: 'Update installed! Restarting service...',
-                    failureFallback: 'Update failed. Please try again.',
-                  })
-                }
-                disabled={installingUpdate}
-                className='flex-1'>
-                Install Update
-              </PrimaryButton>
-            )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* WiFi Status Display */}
-      {wifiStatus && (
-        <div className='rounded-xl p-[4px] shadow-lg' style={{ background: inkGradients[0] }}>
-          <div className='bg-bg-card rounded-lg p-4 flex flex-col'>
-            <h3 className='font-bold text-black  text-lg tracking-tight mb-3'>Network</h3>
-            <div className='flex items-center justify-between'>
-              <div className='flex-1'>
-                <div className='flex items-center gap-2'>
-                  {wifiStatus.connected ? (
-                    <WiFiIcon className='w-4 h-4' style={{ color: 'var(--color-text-muted)' }} />
-                  ) : (
-                    <WiFiOffIcon className='w-4 h-4' style={{ color: 'var(--color-error)' }} />
-                  )}
-                  <span className='font-bold text-black '>
-                    {wifiStatus.connected && wifiStatus.ssid
-                      ? wifiStatus.ssid
-                      : wifiStatus.mode === 'ap'
-                      ? 'Setup Mode (AP)'
-                      : 'Not Connected'}
-                  </span>
-                  <button
-                    type='button'
-                    onClick={triggerAPMode}
-                    className='text-xs underline ml-2 cursor-pointer font-bold'
-                    style={{ color: 'var(--color-brass)' }}
-                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-text-main)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-brass)')}>
-                    Reset WiFi
-                  </button>
-                </div>
-                {wifiStatus.connected && wifiStatus.ip && <div className='text-xs text-gray-600 mt-1 '>IP: {wifiStatus.ip}</div>}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Location Settings */}
       <div className='rounded-xl p-[4px] shadow-lg' style={{ background: inkGradients[2] }}>
         <div className='bg-bg-card rounded-lg p-4 flex flex-col'>
@@ -1274,155 +804,12 @@ const GeneralSettings = ({
         </div>
       </div>
 
-      {/* SSH Management */}
-      <div className='rounded-xl p-[4px] shadow-lg' style={{ background: inkGradients[0] }}>
-        <div className='bg-bg-card rounded-lg p-4 flex flex-col'>
-          <h3 className='font-bold text-black  text-lg tracking-tight mb-3'>SSH Access</h3>
-          <p className='text-sm text-gray-600 mb-4 '>
-            Manage SSH (Secure Shell) service access to your PC-1 device. When SSH is enabled, it uses the same Device Password shown on setup instructions.
-          </p>
-
-          {sshStatus && sshStatus.available ? (
-            <div className='space-y-4'>
-              {/* SSH Status */}
-              <div className='p-4 border-2 border-gray-300 rounded-lg'>
-                <div className='flex items-center justify-between mb-2'>
-                  <span className='text-sm text-black font-bold'>SSH Service</span>
-                  <span
-                    className={`px-3 py-1 rounded-full text-xs font-medium  border-2 ${
-                      sshStatus.enabled && sshStatus.active
-                        ? 'bg-white text-black border-black'
-                        : sshStatus.enabled
-                        ? 'bg-gray-200 text-black border-gray-400'
-                        : 'bg-white text-gray-500 border-gray-300'
-                    }`}>
-                    {sshStatus.enabled && sshStatus.active
-                      ? 'Enabled & Active'
-                      : sshStatus.enabled
-                      ? 'Enabled'
-                      : sshStatus.active
-                      ? 'Active'
-                      : 'Disabled'}
-                  </span>
-                </div>
-                {sshStatus.username && (
-                  <p className='text-xs text-gray-600 mt-1 '>
-                    Username: <span className='text-black '>{sshStatus.username}</span>
-                  </p>
-                )}
-                {sshStatus.enabled && (
-                  <p className='text-xs text-gray-600 mt-1 '>
-                    Connect via: <span className='text-black '>ssh {sshStatus.username || 'admin'}@pc-1.local</span>
-                  </p>
-                )}
-                {sshStatus.enabled && sshStatus.ip_address && (
-                  <p className='text-xs text-gray-600 mt-1 '>
-                    IP address: <span className='text-black '>{sshStatus.ip_address}</span>
-                  </p>
-                )}
-                <p className='text-xs text-gray-600 mt-2 '>
-                  Password: <span className='text-black '>Uses your Device Password</span>
-                </p>
-              </div>
-
-              {/* Enable/Disable SSH */}
-              <div className='flex gap-3'>
-                {!sshStatus.enabled ? (
-                  <button
-                    type='button'
-                    onClick={async () => {
-                      setSshLoading(true);
-                      setSshMessage({ type: '', message: '' });
-                      try {
-                        const response = await adminAuthFetch('/api/system/ssh/enable', { method: 'POST' });
-                        const data = await response.json();
-                        if (data.success) {
-                          setSshMessage({ type: 'success', message: data.message });
-                          // Refresh status
-                          const statusResponse = await fetch('/api/system/ssh/status');
-                          const statusData = await statusResponse.json();
-                          setSshStatus(statusData);
-                        } else {
-                          setSshMessage({ type: 'error', message: getApiError(data, 'Failed to enable SSH') });
-                        }
-                      } catch {
-                        setSshMessage({ type: 'error', message: 'Error enabling SSH' });
-                      } finally {
-                        setSshLoading(false);
-                        setTimeout(() => setSshMessage({ type: '', message: '' }), 5000);
-                      }
-                    }}
-                    disabled={sshLoading}
-                    className='flex-1 py-2.5 px-4 bg-transparent border-2 border-black text-black disabled:border-gray-300 disabled:text-gray-400 disabled:cursor-not-allowed rounded-lg  font-bold hover:bg-black hover:text-white transition-all cursor-pointer'>
-                    {sshLoading ? 'Enabling...' : 'Enable SSH'}
-                  </button>
-                ) : (
-                  <button
-                    type='button'
-                    onClick={async () => {
-                      if (!confirm('Are you sure you want to disable SSH? You may lose remote access to the device.')) {
-                        return;
-                      }
-                      setSshLoading(true);
-                      setSshMessage({ type: '', message: '' });
-                      try {
-                        const response = await adminAuthFetch('/api/system/ssh/disable', { method: 'POST' });
-                        const data = await response.json();
-                        if (data.success) {
-                          setSshMessage({ type: 'success', message: data.message });
-                          // Refresh status
-                          const statusResponse = await fetch('/api/system/ssh/status');
-                          const statusData = await statusResponse.json();
-                          setSshStatus(statusData);
-                        } else {
-                          setSshMessage({ type: 'error', message: getApiError(data, 'Failed to disable SSH') });
-                        }
-                      } catch {
-                        setSshMessage({ type: 'error', message: 'Error disabling SSH' });
-                      } finally {
-                        setSshLoading(false);
-                        setTimeout(() => setSshMessage({ type: '', message: '' }), 5000);
-                      }
-                    }}
-                    disabled={sshLoading}
-                    className='flex-1 py-2.5 px-4 bg-transparent border-0 rounded-lg transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed font-bold'
-                    style={{ color: 'var(--color-error-light)' }}
-                    onMouseEnter={(e) => {
-                      if (!sshLoading) e.currentTarget.style.color = 'var(--color-error)';
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!sshLoading) e.currentTarget.style.color = 'var(--color-error-light)';
-                    }}>
-                    {sshLoading ? 'Disabling...' : 'Disable SSH'}
-                  </button>
-                )}
-              </div>
-
-              {/* SSH Status Messages */}
-              {sshMessage.message && (
-                <div
-                  className={`p-3 rounded-lg text-sm  border-2 ${
-                    sshMessage.type === 'success' ? 'bg-gray-100 text-black border-black' : 'bg-white text-black border-black border-dashed'
-                  }`}>
-                  {sshMessage.type === 'error' && <span className='font-bold mr-2'>ERROR:</span>}
-                  {sshMessage.message}
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className='p-4 border-2 border-gray-300 rounded-lg'>
-              <p className='text-sm text-gray-600 '>SSH isn't available in testing mode</p>
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* Config Backup */}
       <div className='rounded-xl p-[4px] shadow-lg' style={{ background: inkGradients[4] }}>
         <div className='bg-bg-card rounded-lg p-4 flex flex-col'>
           <h3 className='font-bold text-black text-lg tracking-tight mb-3'>Config Backup</h3>
           <p className='text-sm text-gray-600 mb-4'>
-            Export your full PC-1 configuration to a JSON file, or import a previously exported config to restore settings, channels, and modules.
+            Export your full faxomemo configuration to a JSON file, or import a previously exported config to restore settings, channels, and modules.
           </p>
 
           <input
@@ -1451,7 +838,7 @@ const GeneralSettings = ({
           </div>
 
           <p className='text-xs text-gray-600 mt-2'>
-            Imports replace the current configuration immediately. Use exported JSON files from PC-1 for the safest restore path.
+            Imports replace the current configuration immediately. Use exported JSON files from faxomemo for the safest restore path.
           </p>
 
           {configTransferMessage.message && (
@@ -1485,21 +872,6 @@ const GeneralSettings = ({
                 </div>
               )}
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* Device Reboot */}
-      <div className='rounded-xl p-[4px] shadow-lg' style={{ background: inkGradients[1] }}>
-        <div className='bg-bg-card rounded-lg p-4 flex flex-col'>
-          <h3 className='font-bold text-black text-lg tracking-tight mb-3'>Device Reboot</h3>
-          <p className='text-sm text-gray-600 mb-3'>
-            Restart the device to clear any stuck or unexpected state. It will be offline for about 30–60 seconds.
-          </p>
-          {rebootingDevice ? (
-            <div className='text-sm text-gray-600 font-medium'>Rebooting… page will reload when the device comes back online.</div>
-          ) : (
-            <PrimaryButton onClick={handleDeviceReboot}>Reboot Device</PrimaryButton>
           )}
         </div>
       </div>

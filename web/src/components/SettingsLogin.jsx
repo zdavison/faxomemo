@@ -18,7 +18,7 @@ export default function SettingsLogin({ authInfo, onLogin, isSubmitting = false,
     <div className='max-w-[480px] w-full mx-auto px-2 pt-4 pb-12 sm:px-6 sm:pt-8 sm:pb-16 min-h-screen'>
       <div className='mb-8 pt-4 pb-2'>
         <h1 className='text-3xl sm:text-4xl leading-none font-bold tracking-tighter' style={{ color: 'var(--color-text-main)' }}>
-          PC-1 SETTINGS
+          FAXOMEMO SETTINGS
         </h1>
       </div>
 
