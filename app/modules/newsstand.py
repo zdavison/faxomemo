@@ -53,9 +53,19 @@ def fetch_source_articles(
     cutoff = now - timedelta(days=spec.oldest_article)
     name = spec.title
     articles: List[Dict[str, Any]] = []
+    failures = 0
+    last_error: Optional[Exception] = None
+    seen_keys = set()
 
     for feed_url in spec.feeds:
-        feed = _fetch_feed(feed_url)
+        # Builtin recipes often carry stale feed lists; skip dead feeds and
+        # only fail the source when every feed is unreachable.
+        try:
+            feed = _fetch_feed(feed_url)
+        except Exception as exc:
+            failures += 1
+            last_error = exc
+            continue
         if not name:
             name = clean_text(feed.feed.get("title", "")) or feed_url
         taken = 0
@@ -65,6 +75,13 @@ def fetch_source_articles(
             published = _entry_datetime(entry)
             if published is not None and published < cutoff:
                 continue
+            # Section feeds in the same recipe often repeat the index feed's
+            # entries; keep the first occurrence only.
+            key = entry.get("link") or entry.get("title")
+            if key and key in seen_keys:
+                continue
+            if key:
+                seen_keys.add(key)
             articles.append(
                 {
                     "source": name,
@@ -77,6 +94,9 @@ def fetch_source_articles(
                 }
             )
             taken += 1
+
+    if spec.feeds and failures == len(spec.feeds):
+        raise last_error
 
     articles.sort(key=lambda a: a["published"] or _EPOCH, reverse=True)
     return name or "Feed", articles[:articles_per_source]

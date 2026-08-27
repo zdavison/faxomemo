@@ -232,6 +232,51 @@ def test_fetch_respects_max_articles_per_feed(monkeypatch):
     assert [a["title"] for a in articles] == ["One"]
 
 
+def test_fetch_skips_broken_feed_but_keeps_working_feeds(monkeypatch):
+    now = datetime.now(timezone.utc)
+    xml = _rss_xml("Feed", [("Alive", now - timedelta(hours=1))])
+
+    def fake_get(url, **kwargs):
+        if url == "https://x/dead.xml":
+            raise newsstand.requests.exceptions.HTTPError("404")
+        return _FakeFeedResponse(xml.encode("utf-8"))
+
+    monkeypatch.setattr(newsstand.requests, "get", fake_get)
+    spec = recipes.RecipeSpec(
+        title="Src", feeds=["https://x/dead.xml", "https://x/live.xml"]
+    )
+
+    _, articles = newsstand.fetch_source_articles(spec, articles_per_source=3)
+
+    assert [a["title"] for a in articles] == ["Alive"]
+
+
+def test_fetch_raises_when_all_feeds_fail(monkeypatch):
+    def fake_get(url, **kwargs):
+        raise newsstand.requests.exceptions.ConnectionError("down")
+
+    monkeypatch.setattr(newsstand.requests, "get", fake_get)
+    spec = recipes.RecipeSpec(title="Src", feeds=["https://x/a.xml", "https://x/b.xml"])
+
+    with pytest.raises(Exception):
+        newsstand.fetch_source_articles(spec, articles_per_source=3)
+
+
+def test_fetch_dedupes_same_article_across_feeds(monkeypatch):
+    now = datetime.now(timezone.utc)
+    xml = _rss_xml("Feed", [("Shared", now - timedelta(hours=1))])
+    _patch_feed(
+        monkeypatch, {"https://x/a.xml": xml, "https://x/b.xml": xml}
+    )
+    spec = recipes.RecipeSpec(
+        title="Src", feeds=["https://x/a.xml", "https://x/b.xml"]
+    )
+
+    _, articles = newsstand.fetch_source_articles(spec, articles_per_source=10)
+
+    assert [a["title"] for a in articles] == ["Shared"]
+
+
 def test_fetch_url_source_takes_name_from_feed_title(monkeypatch):
     now = datetime.now(timezone.utc)
     xml = _rss_xml("Example Bulletin", [("Item", now - timedelta(hours=1))])
