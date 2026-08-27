@@ -8,6 +8,7 @@ import ScheduleIcon from '../assets/ScheduleIcon';
 import ArrowUpIcon from '../assets/ArrowUpIcon';
 import ArrowDownIcon from '../assets/ArrowDownIcon';
 import WarningIcon from '../assets/WarningIcon';
+import BinIcon from '../assets/BinIcon';
 import { getModuleValidationIssueCount } from '../lib/moduleValidation';
 import { channelScheduleRuleCount } from '../utils';
 
@@ -18,6 +19,8 @@ const ChannelList = ({
   triggerModulePrint,
   setShowScheduleModal,
   swapChannels,
+  createChannel,
+  deleteChannel,
   setShowEditModuleModal,
   setEditingModule,
   moveModuleInChannel,
@@ -314,9 +317,13 @@ const ChannelList = ({
     handleDragEnd();
   };
 
+  const channelPositions = Object.keys(settings.channels || {})
+    .map(Number)
+    .sort((a, b) => a - b);
+
   const channelModulesByPos = (() => {
     const result = {};
-    for (let pos = 1; pos <= 8; pos += 1) {
+    channelPositions.forEach((pos) => {
       const channel = settings.channels?.[pos] || { modules: [] };
       const channelModules = (channel.modules || [])
         .map((assignment) => ({
@@ -326,7 +333,7 @@ const ChannelList = ({
         .filter((item) => item.module)
         .sort((a, b) => a.order - b.order);
       result[pos] = channelModules;
-    }
+    });
     return result;
   })();
 
@@ -388,16 +395,25 @@ const ChannelList = ({
   return (
     <div className='space-y-4'>
       <div className='space-y-4'>
-        {[1, 2, 3, 4, 5, 6, 7, 8].map((pos) => {
+        {channelPositions.length === 0 && (
+          <div className='text-sm text-gray-500 italic py-4 text-center'>
+            No channels yet. Add one to get started.
+          </div>
+        )}
+        {channelPositions.map((pos, positionIndex) => {
           const channel = settings.channels?.[pos] || { modules: [] };
           const channelModules = channelModulesByPos[pos] || [];
           const listId = listIdForChannel(pos);
+          const isFirst = positionIndex === 0;
+          const isLast = positionIndex === channelPositions.length - 1;
+          const prevPos = isFirst ? null : channelPositions[positionIndex - 1];
+          const nextPos = isLast ? null : channelPositions[positionIndex + 1];
 
           // Use shared ink gradients
           const inkGradients = INK_GRADIENTS;
-          
+
           return (
-            <div key={pos} className='rounded-xl p-[4px] shadow-lg' style={{ background: inkGradients[pos - 1] }}>
+            <div key={pos} className='rounded-xl p-[4px] shadow-lg' style={{ background: inkGradients[(pos - 1) % inkGradients.length] }}>
               <div className='bg-bg-card rounded-lg p-4 flex flex-col h-full'>
               <div className='flex items-center justify-between mb-3 gap-4'>
                 <div className='flex items-center gap-3 overflow-x-auto'>
@@ -442,9 +458,9 @@ const ChannelList = ({
                     type='button'
                     onClick={(e) => {
                       e.preventDefault();
-                      swapChannels(pos, pos - 1);
+                      swapChannels(pos, prevPos);
                     }}
-                    disabled={pos === 1}
+                    disabled={isFirst}
                     className='px-2 py-1 text-xs  border-2 border-gray-300 hover:border-black rounded text-gray-600 hover:text-black transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer hover:bg-white'
                     aria-label={`Move channel ${pos} up`}
                     title='Move channel up'>
@@ -454,13 +470,24 @@ const ChannelList = ({
                     type='button'
                     onClick={(e) => {
                       e.preventDefault();
-                      swapChannels(pos, pos + 1);
+                      swapChannels(pos, nextPos);
                     }}
-                    disabled={pos === 8}
+                    disabled={isLast}
                     className='px-2 py-1 text-xs  border-2 border-gray-300 hover:border-black rounded text-gray-600 hover:text-black transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer hover:bg-white'
                     aria-label={`Move channel ${pos} down`}
                     title='Move channel down'>
                     <ArrowDownIcon className='w-3 h-3' />
+                  </button>
+                  <button
+                    type='button'
+                    onClick={(e) => {
+                      e.preventDefault();
+                      deleteChannel(pos);
+                    }}
+                    className='px-2 py-1 text-xs border-2 border-gray-300 hover:border-black rounded text-gray-600 hover:text-black transition-colors cursor-pointer hover:bg-white'
+                    aria-label={`Delete channel ${pos}`}
+                    title='Delete channel'>
+                    <BinIcon className='w-3 h-3' />
                   </button>
                 </div>
               </div>
@@ -620,6 +647,16 @@ const ChannelList = ({
             </div>
           );
         })}
+        <button
+          type='button'
+          onClick={() => createChannel()}
+          className='w-full px-2 py-3 bg-transparent border-2 border-dashed border-gray-400 hover:border-black rounded-lg text-gray-600 hover:text-black transition-all text-xs font-bold tracking-wider cursor-pointer'
+          style={{ backgroundColor: 'transparent' }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--color-bg-white)'}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+          title='Add a new channel'>
+          + ADD CHANNEL
+        </button>
       </div>
 
       {/* Unassigned Modules Section */}

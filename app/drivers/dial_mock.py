@@ -15,7 +15,7 @@ class DialDriver:
 
     def set_position(self, position: int):
         """Simulates the user turning the dial."""
-        if 1 <= position <= 8:
+        if position >= 1:
             if self.current_position != position:
                 self.current_position = position
                 for cb in self.callbacks:

@@ -707,6 +707,48 @@ function App() {
     reorderChannelModules(position, moduleOrders, { optimistic: true });
   };
 
+  const createChannel = async () => {
+    try {
+      const response = await adminAuthFetch('/api/channels', { method: 'POST' });
+      if (!response.ok) throw new Error('Failed to create channel');
+
+      const data = await response.json();
+      setSettings((prev) => ({
+        ...prev,
+        channels: { ...prev.channels, [data.position]: { modules: [] } },
+      }));
+      setStatus({ type: 'success', message: 'Channel added!' });
+      setTimeout(() => setStatus({ type: '', message: '' }), 3000);
+      return data.position;
+    } catch (err) {
+      console.error('Error creating channel:', err);
+      setStatus({ type: 'error', message: err.message || 'Failed to create channel' });
+      return null;
+    }
+  };
+
+  const deleteChannel = async (position) => {
+    if (!confirm(`Are you sure you want to delete channel ${position}?`)) {
+      return;
+    }
+
+    try {
+      const response = await adminAuthFetch(`/api/channels/${position}`, { method: 'DELETE' });
+      if (!response.ok) throw new Error('Failed to delete channel');
+
+      setSettings((prev) => {
+        const channels = { ...prev.channels };
+        delete channels[position];
+        return { ...prev, channels };
+      });
+      setStatus({ type: 'success', message: 'Channel deleted!' });
+      setTimeout(() => setStatus({ type: '', message: '' }), 3000);
+    } catch (err) {
+      console.error('Error deleting channel:', err);
+      setStatus({ type: 'error', message: err.message || 'Failed to delete channel' });
+    }
+  };
+
   const swapChannels = (pos1, pos2) => {
     const channel1 = settings.channels[pos1];
     const channel2 = settings.channels[pos2];
@@ -889,6 +931,8 @@ function App() {
               triggerModulePrint={triggerModulePrint}
               setShowScheduleModal={setShowScheduleModal}
               swapChannels={swapChannels}
+              createChannel={createChannel}
+              deleteChannel={deleteChannel}
               setShowEditModuleModal={setShowEditModuleModal}
               setEditingModule={setEditingModule}
               moveModuleInChannel={moveModuleInChannel}

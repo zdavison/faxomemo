@@ -385,7 +385,7 @@ async def test_channels_command_lists_modules(monkeypatch):
     listing = respond.call_args.args[0]
     assert "1: Morning News + Weather" in listing
     assert "2: (empty)" in listing
-    assert "8: (empty)" in listing
+    assert "8:" not in listing
 
 
 @pytest.mark.asyncio

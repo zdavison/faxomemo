@@ -630,7 +630,7 @@ def _print_channel_config_summary(position: int):
 def _write_channel_overview_compact():
     """Write all channel assignments in a compact format (no reset/flush)."""
     printer.print_header("CHANNELS", icon="list")
-    for channel_num in range(1, 9):
+    for channel_num in sorted(settings.channels):
         channel = settings.channels.get(channel_num)
         if channel and channel.modules:
             names = []
@@ -1062,7 +1062,7 @@ async def check_first_boot():
                 printer.print_line()
 
                 printer.print_bold("Default Channels:")
-                for channel_num in range(1, 9):
+                for channel_num in sorted(settings.channels):
                     channel = settings.channels.get(channel_num)
                     if channel and channel.modules:
                         module_names = []
@@ -4327,6 +4327,32 @@ async def execute_module_action(module_id: str, action: str):
     )
 
 
+@app.post("/api/channels", dependencies=[Depends(require_admin_access)])
+async def create_channel(background_tasks: BackgroundTasks):
+    """Create a new empty channel at the next available position (max existing + 1, or 1)."""
+    global settings
+
+    position = max(settings.channels.keys(), default=0) + 1
+    settings.channels[position] = ChannelConfig(modules=[])
+    background_tasks.add_task(save_settings_background, settings.model_copy(deep=True))
+
+    return {"position": position}
+
+
+@app.delete("/api/channels/{position}", dependencies=[Depends(require_admin_access)])
+async def delete_channel(position: int, background_tasks: BackgroundTasks):
+    """Delete a channel. Leaves gaps in the numbering — no renumbering of remaining channels."""
+    global settings
+
+    if position not in settings.channels:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    del settings.channels[position]
+    background_tasks.add_task(save_settings_background, settings.model_copy(deep=True))
+
+    return {"message": "Channel deleted"}
+
+
 @app.post("/api/channels/{position}/modules", dependencies=[Depends(require_admin_access)])
 async def assign_module_to_channel(
     position: int,
@@ -4337,15 +4363,14 @@ async def assign_module_to_channel(
     """Assign a module to a channel."""
     global settings
 
-    if position < 1 or position > 8:
-        raise HTTPException(status_code=400, detail="Position must be 1-8")
+    if position < 1:
+        raise HTTPException(status_code=400, detail="Position must be >= 1")
 
     if module_id not in settings.modules:
         raise HTTPException(status_code=404, detail="Module not found")
 
-    # Get or create channel config
     if position not in settings.channels:
-        settings.channels[position] = ChannelConfig(modules=[])
+        raise HTTPException(status_code=404, detail="Channel not found")
 
     channel = settings.channels[position]
 
@@ -4792,8 +4817,8 @@ async def manual_trigger():
 @app.post("/action/dial/{position}", dependencies=[Depends(require_admin_access)])
 async def set_dial(position: int):
     """Simulates turning the physical rotary switch."""
-    if position < 1 or position > 8:
-        raise HTTPException(status_code=400, detail="Position must be 1-8")
+    if position < 1:
+        raise HTTPException(status_code=400, detail="Position must be >= 1")
 
     dial.set_position(position)
     return {"message": f"Dial turned to {position}"}
@@ -4807,8 +4832,8 @@ async def print_channel(position: int, background_tasks: BackgroundTasks):
     """Set dial position and trigger print atomically. Returns immediately while print runs in background."""
     logger = logging.getLogger(__name__)
 
-    if position < 1 or position > 8:
-        raise HTTPException(status_code=400, detail="Position must be 1-8")
+    if position < 1:
+        raise HTTPException(status_code=400, detail="Position must be >= 1")
 
     if not try_begin_print_job(debounce=False):
         raise HTTPException(status_code=409, detail="Print already in progress")

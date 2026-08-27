@@ -544,7 +544,7 @@ async def handle_channels_command(ack, respond):
 
     settings = config.settings
     lines = ["*PC-1 Channels*"]
-    for channel_num in range(1, 9):
+    for channel_num in sorted(settings.channels):
         channel = settings.channels.get(channel_num)
         names: List[str] = []
         if channel and channel.modules:
