@@ -57,6 +57,8 @@ const ChannelList = ({
         return isNonEmptyString(cfg.news_api_key);
       case 'rss':
         return Array.isArray(cfg.rss_feeds) && cfg.rss_feeds.some((f) => isNonEmptyString(String(f || '')));
+      case 'newsstand':
+        return isNonEmptyString(cfg.sources);
       case 'email':
         return isNonEmptyString(cfg.email_user) && isNonEmptyString(cfg.email_password);
       case 'slack':

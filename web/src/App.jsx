@@ -340,6 +340,7 @@ function App() {
     const defaults = {
       news: { news_api_key: '' },
       rss: { rss_feeds: [], num_articles: 2 },
+      newsstand: { sources: '', articles_per_source: 3 },
       weather: { temperature_unit: 'fahrenheit' },
       email: { email_host: 'imap.gmail.com', email_user: '', email_password: '', polling_interval: 60 },
       sudoku: { difficulty: 'Medium' },

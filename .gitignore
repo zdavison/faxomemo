@@ -74,6 +74,9 @@ testing/artifacts/
 nul
 NUL
 
+# Newsstand downloaded recipe cache
+app/data/newsstand_cache/
+
 # GeoNames temporary download files
 app/data/*.zip
 app/data/*.txt

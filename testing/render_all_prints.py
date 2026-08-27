@@ -390,6 +390,11 @@ def _overlay_env_test_config(type_id: str, config: dict) -> dict:
         if feeds:
             out["rss_feeds"] = feeds
 
+    elif type_id == "newsstand":
+        sources = _csv_env_list("PC1_TEST_NEWSSTAND_SOURCES")
+        if sources:
+            out["sources"] = "\n".join(sources)
+
     elif type_id == "calendar":
         ics_url = os.getenv("PC1_TEST_CALENDAR_ICS_URL", "").strip()
         if ics_url:
