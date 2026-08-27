@@ -176,7 +176,8 @@ def get_newsstand_results(config: Dict[str, Any] = None) -> List[Dict[str, Any]]
                 "title": "Sources",
                 "description": (
                     "One source per line: a builtin calibre recipe name "
-                    "(example: guardian), a path to a .recipe file, or a feed URL"
+                    "(example: guardian), a path or URL to a .recipe file, "
+                    "or a feed URL"
                 ),
                 "default": "",
             },

@@ -8,14 +8,21 @@ cd "$REPO_DIR"
 ENV_FILE=".faxomemo.env"
 VENV_DIR=".venv"
 BT_SCAN_TIMEOUT=12
+INSTALL_DIR="${FAXOMEMO_INSTALL_DIR:-$HOME/.local/share/faxomemo}"
+UNIT_DIR="${FAXOMEMO_UNIT_DIR:-$HOME/.config/systemd/user}"
+POLL_INTERVAL="${FAXOMEMO_POLL_INTERVAL:-30}"
 
 REDISCOVER=0
 DRY_RUN=0
+DAEMON=0
+INSTALL=0
+UNINSTALL=0
 TRANSPORT_OVERRIDE=""
 
 usage() {
     cat <<'EOF'
 Usage: ./faxomemo [--help] [--rediscover] [--transport usb|bluetooth] [--dry-run]
+                  [--install-daemon] [--uninstall-daemon] [--daemon]
 
 Sets up the environment and starts the PC-1 server with the Phomemo M220 driver.
 
@@ -34,6 +41,17 @@ Flags:
   --dry-run               Print setup checks, detection result, and the final
                           env + command, without pairing, writing .faxomemo.env,
                           or starting the server.
+  --install-daemon        Install faxomemo as a background service: copies the
+                          app to ~/.local/share/faxomemo (override with
+                          FAXOMEMO_INSTALL_DIR), builds its venv there, and
+                          enables a systemd user unit that runs it with
+                          --daemon. Safe to re-run to update the install.
+  --uninstall-daemon      Stop and remove the systemd user unit and delete the
+                          installed copy.
+  --daemon                Run non-interactively for the systemd unit: poll for
+                          a printer every ${FAXOMEMO_POLL_INTERVAL:-30}s
+                          instead of exiting when none is found, and pick the
+                          first match when several Bluetooth devices qualify.
 EOF
 }
 
@@ -56,6 +74,15 @@ while [ $# -gt 0 ]; do
             ;;
         --dry-run)
             DRY_RUN=1
+            ;;
+        --daemon)
+            DAEMON=1
+            ;;
+        --install-daemon)
+            INSTALL=1
+            ;;
+        --uninstall-daemon)
+            UNINSTALL=1
             ;;
         *)
             echo "Error: unknown argument: $1" >&2
@@ -231,6 +258,10 @@ detect_bluetooth() {
         mac="$(echo "$matches" | awk '{print $2}')"
         name="$(echo "$matches" | cut -d' ' -f3-)"
         log "Found Bluetooth device: $name ($mac)"
+    elif [ "$DAEMON" -eq 1 ]; then
+        mac="$(echo "$matches" | head -n1 | awk '{print $2}')"
+        name="$(echo "$matches" | head -n1 | cut -d' ' -f3-)"
+        log "Multiple matching Bluetooth devices; selecting the first: $name ($mac)"
     else
         echo "Multiple matching Bluetooth devices found:"
         echo "$matches" | nl -w2 -s') '
@@ -326,6 +357,90 @@ load_saved_config() {
     return 0
 }
 
+install_daemon() {
+    if ! command -v rsync >/dev/null 2>&1; then
+        echo "Error: --install-daemon requires rsync." >&2
+        exit 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "Error: --install-daemon requires systemd (systemctl not found)." >&2
+        exit 1
+    fi
+
+    if [ "$REPO_DIR" = "$INSTALL_DIR" ]; then
+        log "Running from the install dir; skipping file copy."
+    else
+        log "Installing to $INSTALL_DIR..."
+        mkdir -p "$INSTALL_DIR/web"
+        local item
+        for item in app icons requirements.txt faxomemo; do
+            rsync -a --delete "$REPO_DIR/$item" "$INSTALL_DIR/"
+        done
+        for item in web/dist web/public; do
+            if [ -d "$REPO_DIR/$item" ]; then
+                rsync -a --delete "$REPO_DIR/$item" "$INSTALL_DIR/web/"
+            else
+                log "Warning: $item not found; the web UI needs 'npm run build' in web/ first."
+            fi
+        done
+        if [ ! -f "$INSTALL_DIR/config.json" ] && [ -f "$REPO_DIR/config.json" ]; then
+            cp "$REPO_DIR/config.json" "$INSTALL_DIR/"
+        fi
+    fi
+
+    ( cd "$INSTALL_DIR" && VENV_DIR="$INSTALL_DIR/.venv" setup_venv )
+
+    local unit_file="$UNIT_DIR/faxomemo.service"
+    local already_installed=0
+    if [ -f "$unit_file" ]; then
+        already_installed=1
+    fi
+    log "Writing $unit_file..."
+    mkdir -p "$UNIT_DIR"
+    cat > "$unit_file" <<EOF
+[Unit]
+Description=faxomemo printer server
+After=network-online.target bluetooth.target
+
+[Service]
+Type=simple
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/bin/bash $INSTALL_DIR/faxomemo --daemon
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+
+    if ! loginctl enable-linger "$USER" 2>/dev/null; then
+        log "Warning: could not enable lingering; the daemon will only run while you are logged in."
+    fi
+    systemctl --user daemon-reload
+    if [ "$already_installed" -eq 1 ]; then
+        systemctl --user restart faxomemo
+        log "Updated install and restarted the service."
+    else
+        systemctl --user enable --now faxomemo
+        log "Installed and started the service."
+    fi
+    log "Follow it with: journalctl --user -u faxomemo -f"
+}
+
+uninstall_daemon() {
+    systemctl --user disable --now faxomemo 2>/dev/null || true
+    rm -f "$UNIT_DIR/faxomemo.service"
+    systemctl --user daemon-reload 2>/dev/null || true
+    # Sanity-check before rm -rf: only remove a dir that contains our launcher.
+    if [ -f "$INSTALL_DIR/faxomemo" ]; then
+        rm -rf "$INSTALL_DIR"
+        log "Removed $INSTALL_DIR."
+    elif [ -e "$INSTALL_DIR" ]; then
+        log "Warning: $INSTALL_DIR does not look like a faxomemo install; not removing it."
+    fi
+    log "Service uninstalled."
+}
+
 main() {
     setup_venv
 
@@ -344,13 +459,22 @@ main() {
                     fi
                 }
             fi
-        elif detect_usb; then
-            TRANSPORT="usb"
-        elif detect_bluetooth; then
-            TRANSPORT="bluetooth"
         else
-            log "Could not detect a printer over USB or Bluetooth."
-            exit 1
+            while true; do
+                if detect_usb; then
+                    TRANSPORT="usb"
+                    break
+                elif detect_bluetooth; then
+                    TRANSPORT="bluetooth"
+                    break
+                elif [ "$DAEMON" -eq 1 ]; then
+                    log "No printer found; retrying in ${POLL_INTERVAL}s."
+                    sleep "$POLL_INTERVAL"
+                else
+                    log "Could not detect a printer over USB or Bluetooth."
+                    exit 1
+                fi
+            done
         fi
 
         if [ "$DRY_RUN" -eq 0 ]; then
@@ -389,4 +513,12 @@ main() {
     exec "$python_bin" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 }
 
+if [ "$UNINSTALL" -eq 1 ]; then
+    uninstall_daemon
+    exit 0
+fi
+if [ "$INSTALL" -eq 1 ]; then
+    install_daemon
+    exit 0
+fi
 main

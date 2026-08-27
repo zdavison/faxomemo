@@ -6,6 +6,7 @@ extracts only the feed list and limits - enough to print headlines without
 installing calibre itself.
 """
 
+import hashlib
 import logging
 import sys
 import time
@@ -76,9 +77,11 @@ class RecipeSpec:
 
 
 def classify_source(line: str) -> str:
-    """Classify a source line as "url", "path", or "builtin" recipe name."""
+    """Classify a source line as "url", "recipe_url", "path", or "builtin" name."""
     s = line.strip()
     if s.lower().startswith("http"):
+        if urlparse(s).path.endswith(".recipe"):
+            return "recipe_url"
         return "url"
     if "/" in s or s.endswith(".recipe"):
         return "path"
@@ -89,6 +92,8 @@ def source_display_name(line: str) -> str:
     """Best-effort human name for a source line, used in error messages."""
     s = line.strip()
     kind = classify_source(s)
+    if kind == "recipe_url":
+        return Path(urlparse(s).path).stem
     if kind == "url":
         return urlparse(s).netloc or s
     if kind == "path":
@@ -205,24 +210,22 @@ def load_recipe_file(path: Union[str, Path]) -> RecipeSpec:
     return load_recipe_source(source, name=path.stem)
 
 
-def fetch_builtin_recipe(name: str, cache_dir: Path = CACHE_DIR) -> str:
-    """Download a builtin calibre recipe by name, with a 7-day disk cache."""
+def _fetch_recipe_cached(url: str, cache_name: str, name: str, cache_dir: Path) -> str:
+    """Download a recipe file with a 7-day disk cache and stale-cache fallback."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cached = cache_dir / f"{name}.recipe"
+    cached = cache_dir / cache_name
     if cached.exists():
         age = time.time() - cached.stat().st_mtime
         if age < CACHE_MAX_AGE_SECONDS:
             return cached.read_text(encoding="utf-8")
 
     try:
-        response = requests.get(
-            BUILTIN_RECIPE_URL.format(name=name), timeout=DOWNLOAD_TIMEOUT_SECONDS
-        )
+        response = requests.get(url, timeout=DOWNLOAD_TIMEOUT_SECONDS)
         response.raise_for_status()
     except Exception as exc:
         if cached.exists():
             logger.warning(
-                "Builtin recipe '%s' refresh failed (%s); using stale cache", name, exc
+                "Recipe '%s' refresh failed (%s); using stale cache", name, exc
             )
             return cached.read_text(encoding="utf-8")
         raise RecipeError("recipe download failed", display_name=name) from exc
@@ -231,12 +234,32 @@ def fetch_builtin_recipe(name: str, cache_dir: Path = CACHE_DIR) -> str:
     return response.text
 
 
+def fetch_builtin_recipe(name: str, cache_dir: Path = CACHE_DIR) -> str:
+    """Download a builtin calibre recipe by name, with a 7-day disk cache."""
+    return _fetch_recipe_cached(
+        BUILTIN_RECIPE_URL.format(name=name), f"{name}.recipe", name, cache_dir
+    )
+
+
+def fetch_recipe_url(url: str, cache_dir: Path = CACHE_DIR) -> str:
+    """Download a .recipe file from any URL, with a 7-day disk cache."""
+    name = source_display_name(url)
+    # Hash the URL into the cache filename so two hosts serving the same
+    # recipe filename don't share a cache entry.
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+    return _fetch_recipe_cached(url, f"{name}-{digest}.recipe", name, cache_dir)
+
+
 def resolve_source(line: str, cache_dir: Path = CACHE_DIR) -> RecipeSpec:
-    """Resolve one source line (builtin name, path, or feed URL) to a RecipeSpec."""
+    """Resolve one source line (builtin name, .recipe path/URL, or feed URL)."""
     s = line.strip()
     kind = classify_source(s)
     if kind == "url":
         return RecipeSpec(title=None, feeds=[s])
+    if kind == "recipe_url":
+        return load_recipe_source(
+            fetch_recipe_url(s, cache_dir=cache_dir), name=source_display_name(s)
+        )
     if kind == "path":
         return load_recipe_file(s)
     return load_recipe_source(fetch_builtin_recipe(s, cache_dir=cache_dir), name=s)

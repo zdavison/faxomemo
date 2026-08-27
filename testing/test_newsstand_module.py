@@ -73,6 +73,9 @@ def test_loader_does_not_leave_calibre_stubs_in_sys_modules():
         ("le_monde", "builtin"),
         ("https://example.com/rss.xml", "url"),
         ("http://example.com/feed", "url"),
+        ("https://raw.githubusercontent.com/z/my-recipes/main/berliner.recipe", "recipe_url"),
+        ("http://example.com/foo.recipe", "recipe_url"),
+        ("https://example.com/foo.recipe?ref=main", "recipe_url"),
         ("/home/z/recipes/taz.recipe", "path"),
         ("recipes/taz.recipe", "path"),
         ("taz.recipe", "path"),
@@ -124,6 +127,48 @@ def test_builtin_recipe_downloads_once_and_caches(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert "recipes/simple.recipe" in calls[0]
     assert spec_one.title == spec_two.title == "Simple News"
+
+
+def test_recipe_url_downloads_once_and_caches(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        return _FakeRecipeResponse(SIMPLE_RECIPE_SOURCE)
+
+    monkeypatch.setattr(recipes.requests, "get", fake_get)
+    url = "https://raw.githubusercontent.com/z/my-recipes/main/berliner.recipe"
+
+    spec_one = recipes.resolve_source(url, cache_dir=tmp_path)
+    spec_two = recipes.resolve_source(url, cache_dir=tmp_path)
+
+    assert calls == [url]
+    assert spec_one.title == spec_two.title == "Simple News"
+
+
+def test_recipe_url_cache_does_not_collide_on_same_filename(tmp_path, monkeypatch):
+    sources = {
+        "https://a.example/taz.recipe": SIMPLE_RECIPE_SOURCE,
+        "https://b.example/taz.recipe": SIMPLE_RECIPE_SOURCE.replace(
+            "Simple News", "Other News"
+        ),
+    }
+
+    def fake_get(url, **kwargs):
+        return _FakeRecipeResponse(sources[url])
+
+    monkeypatch.setattr(recipes.requests, "get", fake_get)
+
+    spec_a = recipes.resolve_source("https://a.example/taz.recipe", cache_dir=tmp_path)
+    spec_b = recipes.resolve_source("https://b.example/taz.recipe", cache_dir=tmp_path)
+
+    assert spec_a.title == "Simple News"
+    assert spec_b.title == "Other News"
+
+
+def test_recipe_url_display_name_is_file_stem():
+    name = recipes.source_display_name("https://a.example/recipes/berliner.recipe")
+    assert name == "berliner"
 
 
 def test_builtin_recipe_cache_refreshes_after_seven_days(tmp_path, monkeypatch):

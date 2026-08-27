@@ -130,7 +130,7 @@ export const getModuleValidationErrors = (module) => {
   if (module?.type === 'newsstand') {
     const sources = String(config.sources || '').trim();
     if (!sources) {
-      errors.sources = 'Add at least one source (recipe name, .recipe path, or feed URL).';
+      errors.sources = 'Add at least one source (recipe name, .recipe path or URL, or feed URL).';
     }
   }
 
