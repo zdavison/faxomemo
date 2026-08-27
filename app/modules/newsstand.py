@@ -296,6 +296,15 @@ def print_full_article(
                 "minimum": 1,
                 "maximum": 10,
             },
+            "show_qr": {
+                "type": "boolean",
+                "title": "QR Codes",
+                "description": (
+                    "Print a QR code under each article. Turn off for a "
+                    "headlines-only digest."
+                ),
+                "default": True,
+            },
             "qr_action": {
                 "type": "string",
                 "title": "QR Action",
@@ -350,13 +359,16 @@ def format_newsstand_receipt(
         return
 
     qr_action = str(config.get("qr_action", "open") if config else "open")
+    show_qr = bool(config.get("show_qr", True)) if config else True
 
     def _print_block(article: Dict[str, Any], result, source: str, section: str = ""):
         printer.print_article_block(
             source=source,
             title=article["title"],
             summary=article.get("summary", ""),
-            url=_article_qr_url(article.get("url", ""), result, qr_action, section),
+            url=_article_qr_url(article.get("url", ""), result, qr_action, section)
+            if show_qr
+            else "",
             qr_size=160,
             title_width=24,
             summary_width=28,

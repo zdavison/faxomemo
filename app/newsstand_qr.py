@@ -49,6 +49,11 @@ def clear_tokens() -> None:
         _tokens.clear()
 
 
+def token_count() -> int:
+    with _lock:
+        return len(_tokens)
+
+
 def _local_ip() -> str:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:

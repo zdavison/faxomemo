@@ -615,6 +615,46 @@ def _five_section_recipe(tmp_path):
     return str(path)
 
 
+def test_show_qr_off_prints_headlines_without_qr():
+    printer = _RecordingPrinter()
+    config = {
+        "sources": str(FIXTURES / "parse_index.recipe"),
+        "articles_per_source": 3,
+        "show_qr": False,
+    }
+
+    newsstand.format_newsstand_receipt(printer, config, "NEWSSTAND")
+
+    assert printer.article_blocks
+    assert all(block["url"] == "" for block in printer.article_blocks)
+
+
+def test_show_qr_off_registers_no_print_tokens():
+    from app import newsstand_qr
+
+    newsstand_qr.clear_tokens()
+    printer = _RecordingPrinter()
+    config = {
+        "sources": str(FIXTURES / "parse_index.recipe"),
+        "articles_per_source": 3,
+        "show_qr": False,
+        "qr_action": "print",
+    }
+
+    newsstand.format_newsstand_receipt(printer, config, "NEWSSTAND")
+
+    assert newsstand_qr.token_count() == 0
+
+
+def test_show_qr_defaults_on():
+    printer = _RecordingPrinter()
+    config = {"sources": str(FIXTURES / "parse_index.recipe"), "articles_per_source": 3}
+
+    newsstand.format_newsstand_receipt(printer, config, "NEWSSTAND")
+
+    assert all(block["url"] for block in printer.article_blocks)
+
+
 def test_sections_limit_caps_printed_sections(tmp_path):
     printer = _RecordingPrinter()
     config = {
