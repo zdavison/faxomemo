@@ -147,7 +147,15 @@ def _find_matches(soup: BeautifulSoup, rules) -> List[Any]:
         if not isinstance(rule, dict):
             continue
         name = rule.get("name")
-        attrs = rule.get("attrs") or {}
+        # calibre rules put attribute filters both under 'attrs' and at the
+        # dict's top level ({'id': [...]}, {'role': ...}); merge them, or an
+        # attrs-less rule degenerates to find_all(None) and matches every tag.
+        attrs = dict(rule.get("attrs") or {})
+        for key, value in rule.items():
+            if key not in ("name", "attrs"):
+                attrs[key] = value
+        if name is None and not attrs:
+            continue
         matches.extend(soup.find_all(name, attrs=attrs))
     return matches
 

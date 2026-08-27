@@ -404,6 +404,41 @@ def test_cleanup_keep_only_and_remove_with_lambda_attrs():
     assert not cleaned.find("article").attrs.get("style")
 
 
+def test_cleanup_top_level_attribute_keys_match_calibre_semantics():
+    """Calibre rules put attribute filters at the dict's top level, not only
+    under 'attrs' — e.g. guardian's {'id': [...]}, {'role': [...]}. A rule
+    whose filter matches nothing must remove nothing (regression: it removed
+    the whole document)."""
+    from bs4 import BeautifulSoup
+
+    html = """
+    <html><body>
+    <nav role="navigation">menu</nav>
+    <a href="#maincontent">skip</a>
+    <div id="bannerandheader">banner</div>
+    <article><p>Keep me.</p></article>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    cleaned = fetch.apply_cleanup(
+        soup,
+        remove_tags=[
+            {"id": ["dfp-ad--survey", "bannerandheader"]},
+            {"role": ["navigation", "button"]},
+            {"href": ["#maincontent", "#navigation"]},
+            {"for": "the-checkbox"},
+            {"name": "img", "src": lambda x: x and "tracker" in x},
+        ],
+    )
+
+    text = cleaned.get_text()
+    assert "Keep me." in text
+    assert "menu" not in text
+    assert "skip" not in text
+    assert "banner" not in text
+
+
 def test_preprocess_html_is_called(monkeypatch):
     monkeypatch.setattr(
         fetch.requests, "get", lambda url, **kw: _FakeResponse(PLAIN_ARTICLE_HTML)
