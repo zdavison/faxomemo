@@ -6,20 +6,36 @@ from typing import Any, Dict, List, Optional, Tuple
 import feedparser
 import requests
 
+from app import newsstand_qr
 from app.config import format_print_datetime
 from app.module_registry import register_module
 from app.modules.news import clean_url
 from app.modules.rss import MAX_FEED_SIZE, clean_text
+from app.newsstand_fetch import ARCHIVE_URL_PREFIX
 from app.newsstand_recipes import (
+    IndexRecipeSpec,
     RecipeError,
     RecipeNeedsCalibre,
     RecipeSpec,
+    classify_source,
+    get_index,
     resolve_source,
     source_display_name,
 )
 
 SOURCE_TIMEOUT_SECONDS = 10
+# Index recipes legitimately take minutes on a cache miss (wsj_free sleeps 3s
+# per section); only plain feed URLs keep the short wait.
+INDEX_SOURCE_TIMEOUT_SECONDS = 300
+ARCHIVE_SOURCE_PREFIX = "archive:"
 _EPOCH = datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+def split_archive_prefix(line: str) -> Tuple[bool, str]:
+    """Split an "archive:<source>" line into (is_archive, bare source)."""
+    if line.startswith(ARCHIVE_SOURCE_PREFIX):
+        return True, line[len(ARCHIVE_SOURCE_PREFIX):].strip()
+    return False, line
 
 
 def _entry_datetime(entry) -> Optional[datetime]:
@@ -102,10 +118,35 @@ def fetch_source_articles(
     return name or "Feed", articles[:articles_per_source]
 
 
-def _fetch_one_source(line: str, articles_per_source: int) -> Dict[str, Any]:
-    spec = resolve_source(line)
+def _fetch_one_source(
+    line: str, articles_per_source: int, sections_limit: int = 3
+) -> Dict[str, Any]:
+    archive, bare = split_archive_prefix(line)
+    spec = resolve_source(bare)
+    if isinstance(spec, IndexRecipeSpec):
+        sections = get_index(spec, cache_key=bare)
+        out_sections = [
+            {
+                "name": clean_text(section),
+                "articles": [
+                    {
+                        "title": clean_text(article["title"]),
+                        "summary": clean_text(article["description"]),
+                        "url": article["url"],
+                    }
+                    for article in articles[:articles_per_source]
+                ],
+            }
+            for section, articles in sections[:sections_limit]
+        ]
+        return {
+            "name": spec.title or spec.name,
+            "sections": out_sections,
+            "archive": archive,
+            "source_line": line,
+        }
     name, articles = fetch_source_articles(spec, articles_per_source)
-    return {"name": name, "articles": articles}
+    return {"name": name, "articles": articles, "archive": archive, "source_line": line}
 
 
 def _error_result(line: str, exc: Exception) -> Dict[str, Any]:
@@ -146,19 +187,77 @@ def get_newsstand_results(config: Dict[str, Any] = None) -> List[Dict[str, Any]]
         articles_per_source = 3
     articles_per_source = max(1, min(articles_per_source, 10))
 
+    try:
+        sections_limit = int(config.get("sections_limit", 3))
+    except (TypeError, ValueError):
+        sections_limit = 3
+    sections_limit = max(1, min(sections_limit, 10))
+
     results: List[Dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(lines), 8)) as pool:
         futures = [
-            pool.submit(_fetch_one_source, line, articles_per_source) for line in lines
+            pool.submit(_fetch_one_source, line, articles_per_source, sections_limit)
+            for line in lines
         ]
         for line, future in zip(lines, futures):
+            kind = classify_source(split_archive_prefix(line)[1])
+            wait = (
+                SOURCE_TIMEOUT_SECONDS + 5
+                if kind == "url"
+                else INDEX_SOURCE_TIMEOUT_SECONDS
+            )
             try:
-                # Network calls inside the worker carry their own 10-second
-                # timeouts, so this wait is bounded even on timeout.
-                results.append(future.result(timeout=SOURCE_TIMEOUT_SECONDS + 5))
+                results.append(future.result(timeout=wait))
             except Exception as exc:
                 results.append(_error_result(line, exc))
     return results
+
+
+def _article_qr_url(
+    article_url: str, result: Dict[str, Any], qr_action: str, section: str = ""
+) -> str:
+    if qr_action == "print":
+        return newsstand_qr.article_token_url(
+            article_url,
+            result.get("source_line", ""),
+            source_name=result.get("name", ""),
+            section=section,
+        )
+    if result.get("archive"):
+        return ARCHIVE_URL_PREFIX + article_url
+    return clean_url(article_url)
+
+
+def print_full_article(
+    printer,
+    article: Dict[str, Any],
+    source_name: str = "",
+    section: str = "",
+    max_print_lines: int = 200,
+):
+    """Print one fetched article in full (QR print flow)."""
+    printer.print_header(source_name or "NEWSSTAND", icon="newspaper")
+    caption = format_print_datetime()
+    if section:
+        caption = f"{section} - {caption}"
+    printer.print_caption(caption)
+    printer.print_line()
+
+    if article.get("title"):
+        printer.print_subheader(article["title"])
+    if article.get("byline"):
+        printer.print_caption(article["byline"])
+
+    # The driver truncates the buffered job too, but stop feeding paragraphs
+    # early so a book-length article never renders a giant bitmap.
+    body_width = 32
+    lines_used = 8
+    for paragraph in article.get("paragraphs", []):
+        lines_used += max(1, -(-len(paragraph) // body_width)) + 1
+        if max_print_lines and lines_used > max_print_lines:
+            printer.print_caption("[truncated]")
+            break
+        printer.print_body(paragraph)
 
 
 @register_module(
@@ -188,12 +287,51 @@ def get_newsstand_results(config: Dict[str, Any] = None) -> List[Dict[str, Any]]
                 "minimum": 1,
                 "maximum": 10,
             },
+            "sections_limit": {
+                "type": "integer",
+                "title": "Sections per Index Recipe",
+                "description": (
+                    "For recipes that build their edition in code (like "
+                    "wsj_free): how many sections the digest includes. A "
+                    "full edition can take minutes to crawl."
+                ),
+                "default": 3,
+                "minimum": 1,
+                "maximum": 10,
+            },
+            "qr_action": {
+                "type": "string",
+                "title": "QR Action",
+                "description": (
+                    "open: the QR holds the article link for your phone. "
+                    "print: the QR makes this device fetch and print the "
+                    "full article (phone must be on the same network)."
+                ),
+                "enum": ["open", "print"],
+                "default": "open",
+            },
+            "browser_setup": {
+                "type": "null",
+                "title": "Install browser",
+                "description": (
+                    "Recipes that fetch through archive.today, such as "
+                    "wsj_free, need a headless browser. Downloads roughly "
+                    "300 MB the first time."
+                ),
+            },
         },
     },
     ui_schema={
         "sources": {
             "ui:widget": "textarea",
-            "ui:placeholder": "guardian\n/home/pi/recipes/taz.recipe\nhttps://example.com/rss.xml",
+            "ui:placeholder": "guardian\nwsj_free\narchive:https://example.com/rss.xml",
+        },
+        "browser_setup": {
+            "ui:widget": "action-button",
+            "ui:options": {
+                "action": "install_browser",
+                "label": "Install browser",
+            },
         },
     },
 )
@@ -214,22 +352,34 @@ def format_newsstand_receipt(
         )
         return
 
+    qr_action = str(config.get("qr_action", "open") if config else "open")
+
+    def _print_block(article: Dict[str, Any], result, source: str, section: str = ""):
+        printer.print_article_block(
+            source=source,
+            title=article["title"],
+            summary=article.get("summary", ""),
+            url=_article_qr_url(article.get("url", ""), result, qr_action, section),
+            qr_size=160,
+            title_width=24,
+            summary_width=28,
+            max_summary_lines=2,
+        )
+
     for i, result in enumerate(results):
         if "error" in result:
             printer.print_body(f"{result['name']}: {result['error']}")
+        elif "sections" in result:
+            if not result["sections"]:
+                printer.print_body(f"{result['name']}: no sections in the edition")
+            for section in result["sections"]:
+                printer.print_subheader(section["name"])
+                for article in section["articles"]:
+                    _print_block(article, result, result["name"], section["name"])
         elif not result["articles"]:
             printer.print_body(f"{result['name']}: no recent articles")
         else:
             for article in result["articles"]:
-                printer.print_article_block(
-                    source=article["source"],
-                    title=article["title"],
-                    summary=article.get("summary", ""),
-                    url=clean_url(article.get("url", "")),
-                    qr_size=160,
-                    title_width=24,
-                    summary_width=28,
-                    max_summary_lines=2,
-                )
+                _print_block(article, result, article["source"])
         if i < len(results) - 1:
             printer.print_line()

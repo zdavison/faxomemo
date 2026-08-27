@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from contextlib import asynccontextmanager
 import asyncio
 import uuid
@@ -4349,6 +4349,20 @@ async def execute_module_action(module_id: str, action: str):
 
     module = settings.modules[module_id]
 
+    if module.type == "newsstand" and action == "install_browser":
+        from app import newsstand_fetch
+
+        if newsstand_fetch.install_state()["status"] == "running":
+            raise HTTPException(
+                status_code=409, detail="Browser install already running"
+            )
+        # The download is ~300 MB; the settings button shows its spinner
+        # until this returns.
+        ok, detail = await asyncio.to_thread(newsstand_fetch.install_browser)
+        if not ok:
+            raise HTTPException(status_code=500, detail=detail)
+        return {"status": "ok", "detail": detail}
+
     # Add other module actions here as needed
 
     raise HTTPException(
@@ -4939,6 +4953,93 @@ async def print_module_direct(module_id: str):
     finally:
         # Always mark print as complete (thread-safe)
         clear_print_reservation(clear_hold=False)
+
+def _newsstand_qr_page(heading: str, body: str, status: int = 200, link: str = "") -> HTMLResponse:
+    link_html = (
+        f'<p><a href="{link}">Open the article in your browser instead</a></p>'
+        if link
+        else ""
+    )
+    html = (
+        "<!DOCTYPE html><html><head>"
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{heading}</title></head>"
+        '<body style="font-family:sans-serif;max-width:32em;margin:3em auto;padding:0 1em">'
+        f"<h1>{heading}</h1><p>{body}</p>{link_html}</body></html>"
+    )
+    return HTMLResponse(content=html, status_code=status)
+
+
+def _print_qr_article_sync(entry: dict) -> None:
+    """Fetch a QR-tokened article and print it in full (runs in a thread)."""
+    from app import newsstand_fetch
+    from app.modules.newsstand import print_full_article, split_archive_prefix
+    from app.newsstand_recipes import resolve_source, source_display_name
+
+    archive, bare = split_archive_prefix(entry.get("source_line", ""))
+    spec = resolve_source(bare) if bare else None
+    article_url = entry["article_url"]
+
+    with newsstand_fetch.browser_session():
+        article = newsstand_fetch.fetch_article(spec, article_url, use_archive=archive)
+
+        source_name = (
+            entry.get("source_name")
+            or getattr(spec, "title", None)
+            or (source_display_name(bare) if bare else "")
+        )
+        max_lines = getattr(settings, "max_print_lines", 200)
+        if hasattr(printer, "reset_buffer"):
+            printer.reset_buffer(max_lines)
+        print_full_article(
+            printer,
+            article,
+            source_name=source_name,
+            section=entry.get("section", ""),
+            max_print_lines=max_lines,
+        )
+        if hasattr(printer, "flush_buffer"):
+            printer.flush_buffer()
+
+
+@app.get("/a/{token}")
+async def print_qr_article(token: str):
+    """Scanned newsstand QR (qr_action=print): fetch and print the article."""
+    from app import newsstand_fetch, newsstand_qr
+
+    entry = newsstand_qr.resolve_token(token)
+    if entry is None:
+        return _newsstand_qr_page(
+            "Receipt too old",
+            "This print link has expired - print a fresh newsstand receipt.",
+            status=404,
+        )
+
+    if not try_begin_print_job(debounce=False):
+        return _newsstand_qr_page(
+            "Printer busy", "The printer is busy - try again in a moment.", status=409
+        )
+
+    try:
+        await asyncio.to_thread(_print_qr_article_sync, entry)
+    except newsstand_fetch.BrowserNotInstalled as exc:
+        return _newsstand_qr_page("Browser not installed", str(exc), status=500)
+    except newsstand_fetch.ArchiveFetchError as exc:
+        return _newsstand_qr_page(
+            "Archive fetch failed", str(exc), status=502, link=exc.archive_url
+        )
+    except Exception:
+        logger.exception("QR article print failed")
+        return _newsstand_qr_page(
+            "Could not fetch the article",
+            "The device could not fetch this article right now.",
+            status=502,
+        )
+    finally:
+        clear_print_reservation(clear_hold=False)
+
+    return _newsstand_qr_page("Printing", "The article is printing on the device.")
+
 
 def _print_print_webhook_job_sync(module_id: str, job: dict) -> None:
     print_webhook_service.print_job(
