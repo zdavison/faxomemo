@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Union
 
@@ -252,12 +253,26 @@ def fetch_article(
     """Fetch one article and return {title, byline, paragraphs} for printing."""
     recipe = getattr(spec, "recipe", None)
 
-    if _overrides(recipe, "get_obfuscated_article") and getattr(
-        recipe, "articles_are_obfuscated", False
-    ):
+    # The override alone routes the fetch: recipes like economist_free define
+    # the hook without setting articles_are_obfuscated.
+    if _overrides(recipe, "get_obfuscated_article"):
         with calibre_shims():
             result = recipe.get_obfuscated_article(url)
         html = result.get("data") if isinstance(result, dict) else result
+    elif _overrides(recipe, "print_version"):
+        with calibre_shims():
+            fetch_url = recipe.print_version(url)
+        if fetch_url.startswith("file://"):
+            path = fetch_url[len("file://"):].lstrip("/")
+            html = Path("/" + path).read_bytes()
+        else:
+            response = requests.get(
+                fetch_url,
+                headers={"User-Agent": RECIPE_USER_AGENT},
+                timeout=DIRECT_GET_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            html = response.text
     elif use_archive:
         archive_url = ARCHIVE_URL_PREFIX + url
         try:
@@ -280,6 +295,13 @@ def fetch_article(
 
     if isinstance(html, bytes):
         html = html.decode("utf-8", errors="replace")
+
+    if _overrides(recipe, "preprocess_raw_html"):
+        with calibre_shims():
+            html = recipe.preprocess_raw_html(html, url) or html
+        if isinstance(html, bytes):
+            html = html.decode("utf-8", errors="replace")
+
     soup = BeautifulSoup(html, "html.parser")
 
     if _overrides(recipe, "preprocess_html"):

@@ -19,3 +19,8 @@ jsonschema
 # Slack module (Socket Mode connection to Slack workspaces)
 slack_bolt
 aiohttp
+
+# Newsstand recipe engine (calibre-recipe compatibility: html5_parser/lxml/mechanize imports)
+html5-parser
+lxml
+mechanize

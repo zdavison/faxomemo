@@ -10,10 +10,13 @@ import hashlib
 import importlib.abc
 import importlib.machinery
 import logging
+import random
+import re
 import sys
 import time
 import types
 from contextlib import contextmanager
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -125,18 +128,25 @@ class BasicNewsRecipe:
             self._browser_cache = self.get_browser()
         return self._browser_cache
 
-    def index_to_soup(self, url, raw: bool = False, **kwargs):
-        response = requests.get(
-            url,
-            headers=dict(self.browser().addheaders),
-            timeout=INDEX_TO_SOUP_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
+    def index_to_soup(self, url_or_raw, raw: bool = False, **kwargs):
+        # calibre accepts a URL or pre-fetched HTML (str/bytes) here.
+        if isinstance(url_or_raw, (bytes, bytearray)):
+            content = bytes(url_or_raw)
+        elif isinstance(url_or_raw, str) and not re.match(r"\w+://", url_or_raw):
+            content = url_or_raw
+        else:
+            response = requests.get(
+                url_or_raw,
+                headers=dict(self.browser().addheaders),
+                timeout=INDEX_TO_SOUP_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            content = response.content
         if raw:
-            return response.content
+            return content
         from bs4 import BeautifulSoup
 
-        return BeautifulSoup(response.content, "html.parser")
+        return BeautifulSoup(content, "html.parser")
 
     def tag_to_string(self, tag, *args, **kwargs) -> str:
         if tag is None:
@@ -168,6 +178,46 @@ def _read_url_shim(storage, url=None, timeout: float = 60):
     return read_url(url)
 
 
+_LOCAL_TZ = datetime.now().astimezone().tzinfo
+
+
+class _PersistentTemporaryFile:
+    """Shim for calibre.ptempfile.PersistentTemporaryFile."""
+
+    def __init__(self, suffix: str = "", prefix: str = "", dir=None, mode: str = "w+b"):
+        import tempfile
+
+        self._file = tempfile.NamedTemporaryFile(
+            suffix=suffix, prefix=prefix or "newsstand_", dir=dir, mode=mode, delete=False
+        )
+        self.name = self._file.name
+
+    def __getattr__(self, attr):
+        return getattr(self._file, attr)
+
+
+def _mechanize_browser_shim(*args, user_agent: Optional[str] = None, **kwargs):
+    """Shim for calibre.browser(): a mechanize Browser with robots off."""
+    import mechanize
+
+    br = mechanize.Browser()
+    br.set_handle_robots(False)
+    br.set_handle_refresh(False)
+    br.addheaders = [
+        ("User-Agent", user_agent or _random_chrome_ua()),
+        ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+    ]
+    return br
+
+
+def _random_chrome_ua() -> str:
+    minor = random.randint(0, 6500)
+    return (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/126.0.{minor}.100 Safari/537.36"
+    )
+
+
 class _CalibreStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     """Creates a permissive stub module for calibre and any calibre.* import.
 
@@ -190,7 +240,9 @@ class _CalibreStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
     def exec_module(self, module):
         name = module.__name__
-        if name == "calibre.web.feeds.news":
+        if name == "calibre":
+            module.browser = _mechanize_browser_shim
+        elif name == "calibre.web.feeds.news":
             module.BasicNewsRecipe = BasicNewsRecipe
         elif name == "calibre.ebooks.BeautifulSoup":
             from bs4 import BeautifulSoup
@@ -198,6 +250,12 @@ class _CalibreStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             module.BeautifulSoup = BeautifulSoup
         elif name == "calibre.scraper.simple":
             module.read_url = _read_url_shim
+        elif name == "calibre.ptempfile":
+            module.PersistentTemporaryFile = _PersistentTemporaryFile
+        elif name == "calibre.utils.date":
+            module.local_tz = _LOCAL_TZ
+        elif name == "calibre.utils.random_ua":
+            module.random_common_chrome_user_agent = _random_chrome_ua
 
 
 _STUB_FINDER = _CalibreStubFinder()

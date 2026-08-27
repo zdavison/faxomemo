@@ -650,6 +650,138 @@ def _five_section_recipe(tmp_path):
     return str(path)
 
 
+def test_print_version_and_preprocess_raw_html_hooks(monkeypatch):
+    """economist_news's pattern: print_version writes fetched raw data to a
+    PersistentTemporaryFile and returns a file:// URL; preprocess_raw_html
+    turns that raw data into article HTML."""
+    from app import newsstand_recipes
+
+    source = (
+        "import json\n"
+        "from calibre.ptempfile import PersistentTemporaryFile\n"
+        "from calibre.web.feeds.news import BasicNewsRecipe\n"
+        "class EconNews(BasicNewsRecipe):\n"
+        "    title = 'Econ News'\n"
+        "    def parse_index(self):\n"
+        "        return [('S', [{'title': 'T', 'url': 'https://x/1'}])]\n"
+        "    def print_version(self, url):\n"
+        "        pt = PersistentTemporaryFile('.html')\n"
+        "        pt.write(json.dumps({'headline': 'H', 'paras': ['Body from API.']}).encode())\n"
+        "        pt.close()\n"
+        "        return 'file:///' + pt.name.lstrip('/')\n"
+        "    def preprocess_raw_html(self, raw, url):\n"
+        "        data = json.loads(raw)\n"
+        "        paras = ''.join(f'<p>{p}</p>' for p in data['paras'])\n"
+        "        return f\"<html><body><h1>{data['headline']}</h1>{paras}</body></html>\"\n"
+    )
+    spec = newsstand_recipes.load_recipe_source(source, name="econ_news")
+
+    def explode(*_a, **_k):
+        raise AssertionError("file:// print_version must not hit the network")
+
+    monkeypatch.setattr(fetch.requests, "get", explode)
+    art = fetch.fetch_article(spec, "https://x/1")
+    assert art["title"] == "H"
+    assert art["paragraphs"] == ["Body from API."]
+
+
+def test_obfuscated_hook_used_without_flag(monkeypatch):
+    """economist_free defines get_obfuscated_article without setting
+    articles_are_obfuscated; the override alone must route the fetch."""
+    from app import newsstand_recipes
+
+    source = (
+        "from calibre.web.feeds.news import BasicNewsRecipe\n"
+        "class Econ(BasicNewsRecipe):\n"
+        "    title = 'Econ'\n"
+        "    def get_obfuscated_article(self, url):\n"
+        "        return {'data': '<html><body><h1>T</h1><p>Body via hook.</p>"
+        "</body></html>', 'url': url}\n"
+        "    def parse_index(self):\n"
+        "        return [('S', [{'title': 'T', 'url': 'https://x/1'}])]\n"
+    )
+    spec = newsstand_recipes.load_recipe_source(source, name="econ")
+
+    def explode(*_a, **_k):
+        raise AssertionError("direct GET must not be used when the hook exists")
+
+    monkeypatch.setattr(fetch.requests, "get", explode)
+    art = fetch.fetch_article(spec, "https://x/1")
+    assert art["paragraphs"] == ["Body via hook."]
+
+
+def test_index_to_soup_accepts_raw_html(monkeypatch):
+    """calibre's index_to_soup takes a URL or raw HTML/bytes; economist_free
+    passes it pre-fetched HTML (regression: shim fed the HTML to requests)."""
+    from app import newsstand_recipes
+
+    def explode(*_a, **_k):
+        raise AssertionError("must not hit the network for raw HTML")
+
+    monkeypatch.setattr(newsstand_recipes.requests, "get", explode)
+    recipe = newsstand_recipes.BasicNewsRecipe()
+
+    soup = recipe.index_to_soup("<html><body><p>hello</p></body></html>")
+    assert soup.find("p").get_text() == "hello"
+
+    soup = recipe.index_to_soup(b"<html><body><p>bytes</p></body></html>")
+    assert soup.find("p").get_text() == "bytes"
+
+    raw = recipe.index_to_soup("<html><p>r</p></html>", raw=True)
+    assert isinstance(raw, (str, bytes))
+
+
+def test_calibre_browser_shim_is_a_real_mechanize_browser():
+    import mechanize
+
+    from app.newsstand_recipes import calibre_shims
+
+    with calibre_shims():
+        import calibre
+
+        br = calibre.browser()
+        assert isinstance(br, mechanize.Browser)
+        assert hasattr(br, "open")
+        assert hasattr(br, "addheaders")
+
+
+def test_calibre_utils_shims_resolve_to_real_values():
+    from datetime import datetime, tzinfo
+
+    from app.newsstand_recipes import calibre_shims
+
+    with calibre_shims():
+        from calibre.utils.date import local_tz
+        from calibre.utils.random_ua import random_common_chrome_user_agent
+
+        assert isinstance(local_tz, tzinfo)
+        assert datetime.now(local_tz).tzinfo is local_tz
+        ua = random_common_chrome_user_agent()
+        assert isinstance(ua, str) and "Chrome/" in ua
+
+
+def test_economist_style_recipe_loads_with_real_deps(tmp_path):
+    """A recipe importing html5_parser, lxml, and mechanize (economist_free's
+    imports) must load as an index recipe, not fail as needs-calibre."""
+    from app.newsstand_recipes import IndexRecipeSpec, load_recipe_source
+
+    source = (
+        "from html5_parser import parse\n"
+        "from lxml import etree\n"
+        "from mechanize import Request\n"
+        "from calibre import browser\n"
+        "from calibre.utils.date import local_tz\n"
+        "from calibre.web.feeds.news import BasicNewsRecipe\n"
+        "class Econ(BasicNewsRecipe):\n"
+        "    title = 'Econ Style'\n"
+        "    def parse_index(self):\n"
+        "        return [('S', [{'title': 'T', 'url': 'https://x/1'}])]\n"
+    )
+    spec = load_recipe_source(source, name="econ_style")
+    assert isinstance(spec, IndexRecipeSpec)
+    assert spec.title == "Econ Style"
+
+
 def test_show_qr_off_prints_headlines_without_qr():
     printer = _RecordingPrinter()
     config = {
