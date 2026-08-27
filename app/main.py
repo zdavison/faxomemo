@@ -988,35 +988,6 @@ async def check_first_boot():
 
                 printer.print_bold(format_print_datetime())
 
-                printer.print_line()
-
-                # Show channel assignments
-                printer.print_subheader("CHANNELS")
-
-                import app.config as config_module
-
-                configured_settings = config_module.settings
-
-                # Show all 8 channels
-                for channel_num in range(1, 9):
-                    channel = configured_settings.channels.get(channel_num)
-                    if channel and channel.modules:
-                        # Get module names
-                        module_names = []
-                        for mod_assignment in sorted(
-                            channel.modules, key=lambda m: m.order
-                        ):
-                            module_id = mod_assignment.module_id
-                            if module_id in configured_settings.modules:
-                                module = configured_settings.modules[module_id]
-                                module_names.append(module.name)
-
-                        if module_names:
-                            modules_str = " + ".join(module_names)
-                            printer.print_body(f"  {channel_num}. {modules_str}")
-                    else:
-                        printer.print_caption(f"  {channel_num}. (empty)")
-
                 # Flush buffer (spacing is built into bitmap)
                 if hasattr(printer, "flush_buffer"):
                     printer.flush_buffer()
