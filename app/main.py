@@ -988,6 +988,18 @@ async def check_first_boot():
 
                 printer.print_bold(format_print_datetime())
 
+                try:
+                    device_password_value = device_password.get_device_password()
+                except Exception:
+                    logger.warning(
+                        "Failed to fetch device password for System Ready receipt",
+                        exc_info=True,
+                    )
+                else:
+                    printer.print_line()
+                    printer.print_caption("DEVICE PASSWORD")
+                    printer.print_bold(device_password_value)
+
                 # Flush buffer (spacing is built into bitmap)
                 if hasattr(printer, "flush_buffer"):
                     printer.flush_buffer()
