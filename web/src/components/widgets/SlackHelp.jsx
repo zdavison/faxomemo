@@ -5,7 +5,7 @@ import { adminAuthFetch } from '../../lib/adminAuthFetch';
 
 const APP_MANIFEST = {
   display_information: {
-    name: 'PC-1 Printer',
+    name: 'faxomemo Printer',
     description: 'Print Slack messages on your Paper Console',
     background_color: '#000000',
   },
@@ -21,12 +21,12 @@ const APP_MANIFEST = {
     slash_commands: [
       {
         command: '/channels',
-        description: 'List PC-1 dial channels',
+        description: 'List faxomemo channels',
         should_escape: false,
       },
       {
         command: '/channel',
-        description: 'Print a PC-1 channel',
+        description: 'Print a faxomemo channel',
         usage_hint: '[1-8]',
         should_escape: false,
       },
