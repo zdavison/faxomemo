@@ -27,6 +27,8 @@ const ModuleTestList = ({ settings, modules, triggerModulePrint, wifiStatus, set
         return isNonEmptyString(cfg.email_user) && isNonEmptyString(cfg.email_password);
       case 'slack':
         return isNonEmptyString(cfg.bot_token) && isNonEmptyString(cfg.app_token);
+      case 'beeper':
+        return isNonEmptyString(cfg.access_token);
       case 'calendar':
         return Array.isArray(cfg.ical_sources) && cfg.ical_sources.some((s) => isNonEmptyString(s?.url));
       case 'webhook':
