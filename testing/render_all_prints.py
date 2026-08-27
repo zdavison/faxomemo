@@ -399,18 +399,13 @@ def _overlay_env_test_config(type_id: str, config: dict) -> dict:
             out["rss_feeds"] = feeds
 
     elif type_id == "transit":
+        address = os.getenv("PC1_TEST_TRANSIT_ADDRESS", "").strip()
         lat = os.getenv("PC1_TEST_TRANSIT_LATITUDE", "").strip()
         lon = os.getenv("PC1_TEST_TRANSIT_LONGITUDE", "").strip()
-        if lat and lon:
-            try:
-                out["address"] = {
-                    "city_name": os.getenv("PC1_TEST_TRANSIT_ADDRESS", "").strip()
-                    or "Test address",
-                    "latitude": float(lat),
-                    "longitude": float(lon),
-                }
-            except ValueError:
-                pass
+        if address:
+            out["address"] = address
+        elif lat and lon:
+            out["address"] = f"{lat}, {lon}"
 
     elif type_id == "newsstand":
         sources = _csv_env_list("PC1_TEST_NEWSSTAND_SOURCES")

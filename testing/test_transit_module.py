@@ -107,8 +107,20 @@ def _fresh_state(monkeypatch):
     transit.clear_nearby_cache()
 
 
-def _mock_api(monkeypatch, nearby=None, departures=None, calls=None):
+def _geo(latitude=52.532, longitude=13.401):
+    return {
+        "type": "location",
+        "id": "addr-1",
+        "address": "Glanzstrasse 1, 12437 Berlin",
+        "latitude": latitude,
+        "longitude": longitude,
+    }
+
+
+def _mock_api(monkeypatch, nearby=None, departures=None, calls=None, geocode=None):
     """Route transit.requests.get by URL to canned payloads (or callables)."""
+    if geocode is None:
+        geocode = [_geo()]
 
     def fake_get(url, params=None, timeout=None, headers=None, **kwargs):
         record = {
@@ -121,6 +133,8 @@ def _mock_api(monkeypatch, nearby=None, departures=None, calls=None):
             calls.append(record)
         if "/locations/nearby" in url:
             source = nearby
+        elif url.rstrip("/").endswith("/locations"):
+            source = geocode
         elif "/departures" in url:
             source = departures
         else:
@@ -313,13 +327,7 @@ def test_departures_product_filters_map_to_query_params(monkeypatch):
 
 
 def _receipt_config(**overrides):
-    config = {
-        "address": {
-            "city_name": "Weinbergsweg 1, Berlin",
-            "latitude": 52.532,
-            "longitude": 13.401,
-        },
-    }
+    config = {"address": "Glanzstrasse 1, 12437"}
     config.update(overrides)
     return config
 
@@ -425,6 +433,92 @@ def test_receipt_with_address_prints_no_hint(monkeypatch):
     assert not any("address" in c.lower() for c in printer.of("caption") if "," not in c)
 
 
+# --- Address geocoding ---
+
+
+def test_geocode_query_params_and_result(monkeypatch):
+    calls = []
+    _mock_api(monkeypatch, calls=calls)
+
+    lat, lon = transit.geocode_address("Glanzstrasse 1, 12437")
+
+    assert (lat, lon) == (52.532, 13.401)
+    geo_calls = [c for c in calls if c["url"].rstrip("/").endswith("/locations")]
+    assert len(geo_calls) == 1
+    params = geo_calls[0]["params"]
+    assert params["query"] == "Glanzstrasse 1, 12437"
+    assert params["addresses"] == "true"
+
+
+def test_geocode_nested_location_shape(monkeypatch):
+    nested = [{"type": "stop", "id": "x", "location": {"latitude": 52.1, "longitude": 13.1}}]
+    _mock_api(monkeypatch, geocode=nested)
+
+    assert transit.geocode_address("somewhere") == (52.1, 13.1)
+
+
+def test_geocode_is_cached(monkeypatch):
+    calls = []
+    _mock_api(monkeypatch, calls=calls)
+
+    transit.geocode_address("Glanzstrasse 1, 12437")
+    transit.geocode_address("Glanzstrasse 1, 12437")
+
+    geo_calls = [c for c in calls if c["url"].rstrip("/").endswith("/locations")]
+    assert len(geo_calls) == 1
+
+
+def test_geocode_no_match_raises(monkeypatch):
+    _mock_api(monkeypatch, geocode=[])
+
+    with pytest.raises(transit.TransitFetchError):
+        transit.geocode_address("Nowhere 999")
+
+
+def test_receipt_address_not_found_falls_back_with_caption(monkeypatch):
+    _mock_api(monkeypatch, nearby=[_stop()], departures={"departures": []}, geocode=[])
+    monkeypatch.setattr(transit.app.config.settings, "latitude", 52.52, raising=False)
+    monkeypatch.setattr(transit.app.config.settings, "longitude", 13.405, raising=False)
+    printer = _Printer()
+
+    transit.format_transit_receipt(printer, _receipt_config(), "TRANSIT")
+
+    captions = printer.of("caption")
+    assert any("not found" in c.lower() for c in captions)
+    # Falls back to device location, so departures still print.
+    assert printer.of("subheader")
+
+
+def test_coordinate_pair_address_skips_geocoding(monkeypatch):
+    calls = []
+    _mock_api(monkeypatch, nearby=[_stop()], departures={"departures": []}, calls=calls)
+    printer = _Printer()
+
+    transit.format_transit_receipt(
+        printer, _receipt_config(address="52.532, 13.401"), "TRANSIT"
+    )
+
+    assert not any(c["url"].rstrip("/").endswith("/locations") for c in calls)
+    nearby_calls = [c for c in calls if "/locations/nearby" in c["url"]]
+    assert nearby_calls[0]["params"]["latitude"] == 52.532
+
+
+def test_legacy_dict_address_still_used_directly(monkeypatch):
+    calls = []
+    _mock_api(monkeypatch, nearby=[_stop()], departures={"departures": []}, calls=calls)
+    printer = _Printer()
+
+    transit.format_transit_receipt(
+        printer,
+        {"address": {"city_name": "Berlin", "latitude": 52.532, "longitude": 13.401}},
+        "TRANSIT",
+    )
+
+    assert not any(c["url"].rstrip("/").endswith("/locations") for c in calls)
+    nearby_calls = [c for c in calls if "/locations/nearby" in c["url"]]
+    assert nearby_calls[0]["params"]["latitude"] == 52.532
+
+
 # --- Registration and schema ---
 
 
@@ -433,7 +527,9 @@ def test_module_registered_with_expected_metadata():
     assert defn is not None
     assert defn.offline is False
     assert defn.config_schema is not None
-    assert defn.ui_schema["address"]["ui:widget"] == "location-search"
+    # A plain text field: the location-search widget only finds cities.
+    assert defn.ui_schema.get("address", {}).get("ui:widget") != "location-search"
+    assert defn.config_schema["properties"]["address"]["type"] == "string"
 
 
 def test_config_schema_accepts_defaults_and_full_config():
@@ -453,12 +549,7 @@ def test_config_schema_accepts_defaults_and_full_config():
                 "ferry": False,
                 "regional": True,
             },
-            "address": {
-                "city_name": "Weinbergsweg 1, Berlin",
-                "latitude": 52.532,
-                "longitude": 13.401,
-                "timezone": "Europe/Berlin",
-            },
+            "address": "Glanzstrasse 1, 12437",
         },
     )
 

@@ -78,7 +78,7 @@ const ChannelList = ({
         return isNonEmptyString(cfg.city_name) || isNonEmptyString(settings?.city_name);
       case 'transit':
         // Transit can use either the module address OR the device location.
-        return isNonEmptyString(cfg.address?.city_name) || isNonEmptyString(settings?.city_name);
+        return isNonEmptyString(cfg.address) || isNonEmptyString(settings?.city_name);
       default:
         return true;
     }

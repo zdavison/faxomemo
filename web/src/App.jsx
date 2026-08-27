@@ -343,6 +343,7 @@ function App() {
       newsstand: { sources: '', articles_per_source: 3 },
       weather: { temperature_unit: 'fahrenheit' },
       transit: {
+        address: '',
         stop_count: 3,
         departures_per_stop: 5,
         duration: 30,
