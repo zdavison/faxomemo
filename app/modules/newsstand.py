@@ -15,7 +15,6 @@ from app.newsstand_fetch import ARCHIVE_URL_PREFIX
 from app.newsstand_recipes import (
     IndexRecipeSpec,
     RecipeError,
-    RecipeNeedsCalibre,
     RecipeSpec,
     classify_source,
     get_index,
@@ -153,9 +152,7 @@ def _error_result(line: str, exc: Exception) -> Dict[str, Any]:
     name = source_display_name(line)
     if isinstance(exc, RecipeError):
         name = exc.display_name or name
-    if isinstance(exc, RecipeNeedsCalibre):
-        message = "recipe needs calibre (parse_index)"
-    elif isinstance(exc, RecipeError):
+    if isinstance(exc, RecipeError):
         message = str(exc)
     elif isinstance(exc, concurrent.futures.TimeoutError):
         message = "timed out"
