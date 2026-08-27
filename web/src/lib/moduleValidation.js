@@ -120,6 +120,13 @@ export const getModuleValidationErrors = (module) => {
     }
   }
 
+  if (module?.type === 'newsstand') {
+    const sources = String(config.sources || '').trim();
+    if (!sources) {
+      errors.sources = 'Add at least one source (recipe name, .recipe path, or feed URL).';
+    }
+  }
+
   if (module?.type === 'print_webhook') {
     const endpointPath = String(config.endpoint_path || '').trim();
     const enabledTypes = [config.accept_text, config.accept_images, config.accept_json].some(Boolean);
