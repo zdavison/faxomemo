@@ -82,6 +82,9 @@ const ActionButton = ({
     
     return (
         <div className="mb-4">
+            {schema?.description && (
+                <p className="text-sm text-gray-500 mb-2">{schema.description}</p>
+            )}
             <button
                 type="button"
                 onClick={handleClick}

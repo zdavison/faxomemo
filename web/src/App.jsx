@@ -340,7 +340,7 @@ function App() {
     const defaults = {
       news: { news_api_key: '' },
       rss: { rss_feeds: [], num_articles: 2 },
-      newsstand: { sources: '', articles_per_source: 3 },
+      newsstand: { sources: '', articles_per_source: 3, qr_action: 'open', sections_limit: 3 },
       weather: { temperature_unit: 'fahrenheit' },
       transit: {
         address: '',

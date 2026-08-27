@@ -132,6 +132,10 @@ export const getModuleValidationErrors = (module) => {
     if (!sources) {
       errors.sources = 'Add at least one source (recipe name, .recipe path or URL, or feed URL).';
     }
+    const sectionsLimit = Number(config.sections_limit ?? 3);
+    if (!Number.isInteger(sectionsLimit) || sectionsLimit < 1 || sectionsLimit > 10) {
+      errors.sections_limit = 'Choose between 1 and 10 sections per index recipe.';
+    }
   }
 
   if (module?.type === 'print_webhook') {
