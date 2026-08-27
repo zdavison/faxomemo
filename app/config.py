@@ -83,6 +83,21 @@ class SlackConfig(BaseModel):
     allowed_user_ids: str = ""  # Optional comma-separated Slack user IDs allow-list
 
 
+BEEPER_DEFAULT_API_URL = "http://localhost:23373"
+
+
+class BeeperConfig(BaseModel):
+    """One Beeper module instance = one Beeper Desktop API connection."""
+
+    model_config = ConfigDict(extra="ignore")
+    access_token: str = ""  # Created in Beeper Desktop under Settings -> Integrations
+    auto_print_messages: bool = True
+    # Comma-separated sender names (fullName or username). Empty allows nobody:
+    # the Beeper account sees every personal chat, so the module is closed by default.
+    allowed_senders: str = ""
+    api_url: str = BEEPER_DEFAULT_API_URL
+
+
 def _default_text_content_doc() -> Dict[str, Any]:
     return {"type": "doc", "content": [{"type": "paragraph"}]}
 

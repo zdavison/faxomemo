@@ -78,6 +78,13 @@ export const getModuleValidationErrors = (module) => {
     }
   }
 
+  if (module?.type === 'beeper') {
+    const accessToken = String(config.access_token || '').trim();
+    if (!accessToken) {
+      errors.access_token = 'Access token is required.';
+    }
+  }
+
   if (module?.type === 'slack') {
     const botToken = String(config.bot_token || '').trim();
     const appToken = String(config.app_token || '').trim();

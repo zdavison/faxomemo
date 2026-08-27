@@ -385,6 +385,14 @@ def _overlay_env_test_config(type_id: str, config: dict) -> dict:
         if host:
             out["email_host"] = host
 
+    elif type_id == "beeper":
+        token = os.getenv("PC1_TEST_BEEPER_TOKEN", "").strip()
+        api_url = os.getenv("PC1_TEST_BEEPER_API_URL", "").strip()
+        if token:
+            out["access_token"] = token
+        if api_url:
+            out["api_url"] = api_url
+
     elif type_id == "rss":
         feeds = _csv_env_list("PC1_TEST_RSS_FEEDS")
         if feeds:

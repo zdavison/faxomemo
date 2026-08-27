@@ -382,6 +382,12 @@ function App() {
         auto_print_messages: true,
         allowed_user_ids: '',
       },
+      beeper: {
+        access_token: '',
+        auto_print_messages: true,
+        allowed_senders: '',
+        api_url: 'http://localhost:23373',
+      },
     };
     return defaults[moduleType] || {};
   };

@@ -137,6 +137,7 @@ from app.hardware import (
 )
 import app.location_lookup as location_lookup
 import app.slack_manager as slack_manager
+import app.beeper_manager as beeper_manager
 
 # --- BACKGROUND TASKS ---
 
@@ -192,6 +193,11 @@ async def task_watchdog():
             await slack_manager.reconcile()
         except Exception:
             logger.exception("Slack reconcile failed in watchdog")
+
+        try:
+            await beeper_manager.reconcile()
+        except Exception:
+            logger.exception("Beeper reconcile failed in watchdog")
 
 
 async def email_polling_loop():
@@ -1319,6 +1325,10 @@ async def lifespan(app: FastAPI):
     slack_manager.init_runtime(trigger_channel)
     asyncio.create_task(slack_manager.reconcile())
 
+    # Connect Beeper Desktop for any configured Beeper modules.
+    beeper_manager.init_runtime(trigger_channel)
+    asyncio.create_task(beeper_manager.reconcile())
+
     # Initialize Main Button Callbacks
     # Short press = Print
     button.set_callback(on_button_press_threadsafe)
@@ -1347,6 +1357,11 @@ async def lifespan(app: FastAPI):
         await slack_manager.shutdown()
     except Exception:
         logger.exception("Slack shutdown failed")
+
+    try:
+        await beeper_manager.shutdown()
+    except Exception:
+        logger.exception("Beeper shutdown failed")
 
     # Cleanup hardware drivers
     if hasattr(printer, "close"):
@@ -1469,6 +1484,14 @@ async def health_check():
         health["components"]["slack"] = {
             module_id: status.get("status", "unknown")
             for module_id, status in slack_statuses.items()
+        }
+
+    # Per-module Beeper connection status (only present when Beeper modules exist)
+    beeper_statuses = beeper_manager.get_statuses()
+    if beeper_statuses:
+        health["components"]["beeper"] = {
+            module_id: status.get("status", "unknown")
+            for module_id, status in beeper_statuses.items()
         }
 
     # Check WiFi status
@@ -1596,6 +1619,7 @@ async def update_settings(new_settings: Settings, background_tasks: BackgroundTa
 
     # Reconnect/disconnect Slack workspaces if Slack modules changed.
     background_tasks.add_task(slack_manager.reconcile)
+    background_tasks.add_task(beeper_manager.reconcile)
 
     response = {"message": "Settings saved", "config": settings}
     if timezone_changed:
@@ -1664,6 +1688,7 @@ async def import_settings(
     validation_warnings = _collect_settings_validation_warnings(settings)
     background_tasks.add_task(save_settings_background, settings.model_copy(deep=True))
     background_tasks.add_task(slack_manager.reconcile)
+    background_tasks.add_task(beeper_manager.reconcile)
 
     response = {
         "message": "Configuration imported",
@@ -1694,6 +1719,7 @@ async def reset_settings(background_tasks: BackgroundTasks):
     # Save to disk (overwriting existing config.json)
     background_tasks.add_task(save_settings_background, settings.model_copy(deep=True))
     background_tasks.add_task(slack_manager.reconcile)
+    background_tasks.add_task(beeper_manager.reconcile)
 
     return {"message": "Settings reset to defaults", "config": settings}
 
@@ -1711,6 +1737,7 @@ async def reload_settings():
     config_module.settings = settings
 
     asyncio.create_task(slack_manager.reconcile())
+    asyncio.create_task(beeper_manager.reconcile())
 
     return {"message": "Settings reloaded from disk", "config": settings}
 
@@ -4230,6 +4257,7 @@ async def create_module(module: ModuleInstance, background_tasks: BackgroundTask
     settings.modules[module.id] = module
     background_tasks.add_task(save_settings_background, settings.model_copy(deep=True))
     background_tasks.add_task(slack_manager.reconcile)
+    background_tasks.add_task(beeper_manager.reconcile)
 
     return {"message": "Module created", "module": module}
 
@@ -4271,6 +4299,7 @@ async def update_module(
     config_module.settings = settings
 
     background_tasks.add_task(slack_manager.reconcile)
+    background_tasks.add_task(beeper_manager.reconcile)
 
     return {"message": "Module updated", "module": module}
 
@@ -4300,6 +4329,7 @@ async def delete_module(module_id: str, background_tasks: BackgroundTasks):
     del settings.modules[module_id]
     background_tasks.add_task(save_settings_background, settings.model_copy(deep=True))
     background_tasks.add_task(slack_manager.reconcile)
+    background_tasks.add_task(beeper_manager.reconcile)
 
     return {"message": "Module deleted"}
 
@@ -4977,6 +5007,17 @@ class SlackTestRequest(BaseModel):
 async def test_slack(payload: SlackTestRequest):
     """Validate a Slack bot/app token pair without touching live connections."""
     return await slack_manager.test_credentials(payload.bot_token, payload.app_token)
+
+
+class BeeperTestRequest(BaseModel):
+    access_token: str = ""
+    api_url: str = ""
+
+
+@app.post("/api/beeper/test", dependencies=[Depends(require_admin_access)])
+async def test_beeper(payload: BeeperTestRequest):
+    """Validate a Beeper Desktop access token without touching live connections."""
+    return await beeper_manager.test_credentials(payload.access_token, payload.api_url)
 
 
 @app.post("/debug/test-webhook", dependencies=[Depends(require_admin_access)])
