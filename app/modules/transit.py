@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -111,6 +112,19 @@ def get_departures(
     return departures
 
 
+# The serial driver strips non-ASCII before printing, so emit ASCII here or the
+# column padding computed below drifts on paper.
+_GERMAN_TRANSLITERATIONS = str.maketrans(
+    {"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss"}
+)
+
+
+def _ascii(text: str) -> str:
+    text = str(text).translate(_GERMAN_TRANSLITERATIONS)
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in text if 0x20 <= ord(c) <= 0x7E)
+
+
 def _parse_iso(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value:
         return None
@@ -152,11 +166,19 @@ def _format_departure_line(dep: Dict[str, Any], now: Optional[datetime] = None) 
             if delay is not None:
                 right += f" {int(round(delay / 60)):+d}"
 
-    left = f"{line_name} → {direction}".rstrip()
+    left = _ascii(f"{line_name} -> {direction}").rstrip()
     available = TRANSIT_LINE_WIDTH - len(right) - 2
     if len(left) > available:
         left = left[: max(available, 1)].rstrip()
     return f"{left:<{available}}  {right}"
+
+
+def _format_stop_subheader(stop: Dict[str, Any]) -> str:
+    name = _ascii(str(stop.get("name") or "Stop")).upper()
+    distance = stop.get("distance")
+    if distance is None:
+        return name
+    return f"{name} - {int(distance)}M"
 
 
 def _resolve_location(config: Dict[str, Any]) -> Tuple[float, float, bool]:
@@ -289,12 +311,7 @@ def format_transit_receipt(
 
     now = current_datetime()
     for index, stop in enumerate(stops):
-        name = str(stop.get("name") or "Stop").upper()
-        distance = stop.get("distance")
-        if distance is not None:
-            printer.print_subheader(f"{name} · {int(distance)}M")
-        else:
-            printer.print_subheader(name)
+        printer.print_subheader(_format_stop_subheader(stop))
 
         try:
             departures = get_departures(str(stop.get("id")), duration, products)

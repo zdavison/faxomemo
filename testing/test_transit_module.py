@@ -189,6 +189,23 @@ def test_departure_line_fits_receipt_width():
     assert line.rstrip().endswith("7 min +5")
 
 
+def test_departure_line_is_ascii_with_german_transliteration():
+    # The serial driver strips non-ASCII, so the module must emit ASCII itself
+    # or padding math breaks on paper.
+    line = transit._format_departure_line(
+        _dep(line="M8", direction="Herzbergstraße/Süd", when_min=4, delay=0), NOW
+    )
+    assert line.isascii()
+    assert "->" in line
+    assert "Herzbergstrasse" in line
+
+
+def test_subheader_text_is_ascii():
+    text = transit._format_stop_subheader(_stop(name="Schönhauser Allee"))
+    assert text.isascii()
+    assert text == "SCHOENHAUSER ALLEE - 180M"
+
+
 # --- Nearby-stop cache ---
 
 
