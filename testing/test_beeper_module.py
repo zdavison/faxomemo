@@ -56,7 +56,8 @@ ANNA = {"name": "Anna", "username": "anna_w", "network": "WhatsApp"}
 
 
 def _make_connection(**cfg_overrides) -> BeeperConnection:
-    cfg = BeeperConfig(access_token="beeper-tok", allowed_senders="Anna", **cfg_overrides)
+    cfg_overrides.setdefault("allowed_senders", "Anna")
+    cfg = BeeperConfig(access_token="beeper-tok", **cfg_overrides)
     conn = BeeperConnection("beeper-1", "BEEPER", cfg)
     conn._resolve_sender = AsyncMock(return_value=dict(ANNA))
     return conn
