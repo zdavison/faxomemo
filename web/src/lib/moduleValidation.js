@@ -100,6 +100,26 @@ export const getModuleValidationErrors = (module) => {
     }
   }
 
+  if (module?.type === 'transit') {
+    const stopCount = Number(config.stop_count ?? 3);
+    const departuresPerStop = Number(config.departures_per_stop ?? 5);
+    const duration = Number(config.duration ?? 30);
+    const maxDistance = Number(config.max_distance ?? 500);
+
+    if (!Number.isInteger(stopCount) || stopCount < 1 || stopCount > 5) {
+      errors.stop_count = 'Choose between 1 and 5 stops.';
+    }
+    if (!Number.isInteger(departuresPerStop) || departuresPerStop < 1 || departuresPerStop > 10) {
+      errors.departures_per_stop = 'Choose between 1 and 10 departures per stop.';
+    }
+    if (!Number.isInteger(duration) || duration < 1 || duration > 240) {
+      errors.duration = 'Enter a look-ahead window between 1 and 240 minutes.';
+    }
+    if (!Number.isInteger(maxDistance) || maxDistance < 50 || maxDistance > 5000) {
+      errors.max_distance = 'Enter a walking distance between 50 and 5000 meters.';
+    }
+  }
+
   if (module?.type === 'print_webhook') {
     const endpointPath = String(config.endpoint_path || '').trim();
     const enabledTypes = [config.accept_text, config.accept_images, config.accept_json].some(Boolean);

@@ -341,6 +341,13 @@ function App() {
       news: { news_api_key: '' },
       rss: { rss_feeds: [], num_articles: 2 },
       weather: { temperature_unit: 'fahrenheit' },
+      transit: {
+        stop_count: 3,
+        departures_per_stop: 5,
+        duration: 30,
+        max_distance: 500,
+        products: { suburban: true, subway: true, tram: true, bus: true, ferry: true, regional: true },
+      },
       email: { email_host: 'imap.gmail.com', email_user: '', email_password: '', polling_interval: 60 },
       sudoku: { difficulty: 'Medium' },
       crossword: { num_words: 10, difficulty: 'Easy' },

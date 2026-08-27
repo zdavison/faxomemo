@@ -72,6 +72,9 @@ const ChannelList = ({
       case 'weather':
         // Weather can use either module-level location OR global settings location.
         return isNonEmptyString(cfg.city_name) || isNonEmptyString(settings?.city_name);
+      case 'transit':
+        // Transit can use either the module address OR the device location.
+        return isNonEmptyString(cfg.address?.city_name) || isNonEmptyString(settings?.city_name);
       default:
         return true;
     }
