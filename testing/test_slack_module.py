@@ -419,6 +419,38 @@ async def test_channel_command_triggers_print(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_command_accepts_position_above_eight(monkeypatch):
+    fake_settings = _fake_settings_with_channels(monkeypatch)
+    fake_settings.channels[12] = types.SimpleNamespace(
+        modules=[types.SimpleNamespace(module_id="news-1", order=0)]
+    )
+    triggered = []
+
+    async def fake_trigger(position):
+        triggered.append(position)
+
+    slack_manager.init_runtime(fake_trigger)
+    monkeypatch.setattr(hardware_module, "try_begin_print_job", lambda debounce=False: True)
+
+    respond = AsyncMock()
+    await handle_channel_command(AsyncMock(), respond, {"text": "12"})
+
+    assert triggered == [12]
+    assert "Printing channel 12" in respond.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_channel_command_rejects_zero(monkeypatch):
+    _fake_settings_with_channels(monkeypatch)
+    respond = AsyncMock()
+
+    await handle_channel_command(AsyncMock(), respond, {"text": "0"})
+
+    assert "Invalid channel number" in respond.call_args.args[0]
+    assert "1 or higher" in respond.call_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_channel_command_reports_busy_printer(monkeypatch):
     _fake_settings_with_channels(monkeypatch)
     triggered = []

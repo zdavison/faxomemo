@@ -565,8 +565,8 @@ async def handle_channel_command(ack, respond, command):
     await ack()
 
     raw = (command.get("text") or "").strip()
-    if not raw.isdigit() or not (1 <= int(raw) <= 8):
-        await respond(f"Invalid channel number: '{raw}'. Use a number between 1 and 8.")
+    if not raw.isdigit() or int(raw) < 1:
+        await respond(f"Invalid channel number: '{raw}'. Use a channel number of 1 or higher.")
         return
 
     channel_num = int(raw)
