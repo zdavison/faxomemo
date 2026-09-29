@@ -1120,7 +1120,31 @@ def draw_hourly_forecast_image(
                 "title": "Temperature Unit",
                 "enum": ["fahrenheit", "celsius"],
                 "default": "fahrenheit"
-            }
+            },
+            "show_current": {
+                "type": "boolean",
+                "title": "Current Conditions",
+                "description": "Print the current conditions panel.",
+                "default": True,
+            },
+            "show_summary": {
+                "type": "boolean",
+                "title": "24-Hour Summary",
+                "description": "Print the plain-language next-24-hours summary.",
+                "default": True,
+            },
+            "show_hourly": {
+                "type": "boolean",
+                "title": "12-Hour Forecast",
+                "description": "Print the hour-by-hour forecast grid.",
+                "default": True,
+            },
+            "show_daily": {
+                "type": "boolean",
+                "title": "5-Day Forecast",
+                "description": "Print the day-by-day forecast grid.",
+                "default": True,
+            },
         },
     },
     ui_schema={"location": {"ui:widget": "location-search"}},
@@ -1133,6 +1157,12 @@ def format_weather_receipt(
     scheduled: bool = False,
 ):
     """Prints weather with current conditions plus compact hourly/daily forecasts."""
+    section_config = config or {}
+    show_current = bool(section_config.get("show_current", True))
+    show_summary = bool(section_config.get("show_summary", True))
+    show_hourly = bool(section_config.get("show_hourly", True))
+    show_daily = bool(section_config.get("show_daily", True))
+
     if scheduled:
         weather = get_cached_weather(config, module_id=module_id)
         if not weather:
@@ -1188,24 +1218,27 @@ def format_weather_receipt(
         "semibold": getattr(printer, "_get_font", lambda s: None)("semibold"),
     }
 
-    panel_image = draw_current_conditions_panel(weather, printer_width, fonts)
-    if panel_image:
-        printer.print_image(panel_image)
-    else:
-        # Fallback to text-only output if panel render fails.
-        printer.print_subheader((weather.get("city") or "LOCATION").upper())
-        printer.print_text(_format_temperature(weather.get("current"), weather.get("temperature_unit")), "bold_lg")
-        printer.print_body(weather.get("condition") or "Unavailable")
-        printer.print_body(
-            f"High {_format_temperature(weather.get('high'), weather.get("temperature_unit"))} | "
-            f"Low {_format_temperature(weather.get('low'), weather.get("temperature_unit"))}"
-        )
-    printer.print_body(_build_24_hour_summary(weather))
-    printer.feed(1)
+    if show_current:
+        panel_image = draw_current_conditions_panel(weather, printer_width, fonts)
+        if panel_image:
+            printer.print_image(panel_image)
+        else:
+            # Fallback to text-only output if panel render fails.
+            printer.print_subheader((weather.get("city") or "LOCATION").upper())
+            printer.print_text(_format_temperature(weather.get("current"), weather.get("temperature_unit")), "bold_lg")
+            printer.print_body(weather.get("condition") or "Unavailable")
+            printer.print_body(
+                f"High {_format_temperature(weather.get('high'), weather.get("temperature_unit"))} | "
+                f"Low {_format_temperature(weather.get('low'), weather.get("temperature_unit"))}"
+            )
+    if show_summary:
+        printer.print_body(_build_24_hour_summary(weather))
+    if show_current or show_summary:
+        printer.feed(1)
 
     # 12-Hour Forecast
     hourly_forecast = weather.get("hourly_forecast", [])
-    if hourly_forecast:
+    if hourly_forecast and show_hourly:
         printer.print_subheader("12-HOUR FORECAST")
 
         # Turn generic forecast data into an image
@@ -1217,7 +1250,7 @@ def format_weather_receipt(
 
     # 5-Day Forecast
     forecast = weather.get("forecast", [])
-    if forecast:
+    if forecast and show_daily:
         printer.print_subheader("5-DAY FORECAST")
 
         # Turn generic forecast data into an image

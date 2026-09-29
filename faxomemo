@@ -8,6 +8,7 @@ cd "$REPO_DIR"
 ENV_FILE=".faxomemo.env"
 VENV_DIR=".venv"
 BT_SCAN_TIMEOUT=12
+PORT="${FAXOMEMO_PORT:-3290}"
 INSTALL_DIR="${FAXOMEMO_INSTALL_DIR:-$HOME/.local/share/faxomemo}"
 UNIT_DIR="${FAXOMEMO_UNIT_DIR:-$HOME/.config/systemd/user}"
 POLL_INTERVAL="${FAXOMEMO_POLL_INTERVAL:-30}"
@@ -17,12 +18,15 @@ DRY_RUN=0
 DAEMON=0
 INSTALL=0
 UNINSTALL=0
+SKIP_READY=0
+WEB=0
 TRANSPORT_OVERRIDE=""
 
 usage() {
     cat <<'EOF'
 Usage: ./faxomemo [--help] [--rediscover] [--transport usb|bluetooth] [--dry-run]
-                  [--install-daemon] [--uninstall-daemon] [--daemon]
+                  [--skip-ready] [--install-daemon] [--uninstall-daemon] [--daemon]
+       ./faxomemo web
 
 Sets up the environment and starts the PC-1 server with the Phomemo M220 driver.
 
@@ -30,8 +34,13 @@ Sets up the environment and starts the PC-1 server with the Phomemo M220 driver.
   2. Detects the printer transport: USB if the device file exists, otherwise
      scans for the M220 over Bluetooth and pairs/trusts it.
   3. Persists the working config to .faxomemo.env and reuses it on later runs.
-  4. Execs `uvicorn app.main:app --host 0.0.0.0 --port 8000` with
+  4. Execs `uvicorn app.main:app --host 0.0.0.0 --port 3290` with
      PC1_PRINTER_DRIVER=phomemo and the detected transport env vars applied.
+
+Commands:
+  web                     Open the faxomemo UI in your browser. Starts the
+                          installed service first if nothing is listening.
+                          Override the port with FAXOMEMO_PORT.
 
 Flags:
   --help                  Show this help and exit.
@@ -41,6 +50,8 @@ Flags:
   --dry-run               Print setup checks, detection result, and the final
                           env + command, without pairing, writing .faxomemo.env,
                           or starting the server.
+  --skip-ready            Do not print the SYSTEM READY receipt on startup.
+                          (First-boot WELCOME receipts still print.)
   --install-daemon        Install faxomemo as a background service: copies the
                           app to ~/.local/share/faxomemo (override with
                           FAXOMEMO_INSTALL_DIR), builds its venv there, and
@@ -78,11 +89,17 @@ while [ $# -gt 0 ]; do
         --daemon)
             DAEMON=1
             ;;
+        --skip-ready)
+            SKIP_READY=1
+            ;;
         --install-daemon)
             INSTALL=1
             ;;
         --uninstall-daemon)
             UNINSTALL=1
+            ;;
+        web)
+            WEB=1
             ;;
         *)
             echo "Error: unknown argument: $1" >&2
@@ -383,6 +400,10 @@ install_daemon() {
                 log "Warning: $item not found; the web UI needs 'npm run build' in web/ first."
             fi
         done
+        # The label designer is optional; scripts/fetch_label_designer.sh installs it.
+        if [ -d "$REPO_DIR/vendor" ]; then
+            rsync -a --delete "$REPO_DIR/vendor" "$INSTALL_DIR/"
+        fi
         if [ ! -f "$INSTALL_DIR/config.json" ] && [ -f "$REPO_DIR/config.json" ]; then
             cp "$REPO_DIR/config.json" "$INSTALL_DIR/"
         fi
@@ -405,7 +426,7 @@ After=network-online.target bluetooth.target
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/bin/bash $INSTALL_DIR/faxomemo --daemon
+ExecStart=/bin/bash $INSTALL_DIR/faxomemo --daemon --skip-ready
 Restart=always
 RestartSec=10
 
@@ -425,6 +446,73 @@ EOF
         log "Installed and started the service."
     fi
     log "Follow it with: journalctl --user -u faxomemo -f"
+}
+
+server_is_up() {
+    (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
+}
+
+wait_for_server() {
+    local deadline=$((SECONDS + ${1:-30}))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        server_is_up && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+# Read the Device Password the settings UI asks for. Prefer the installed copy,
+# so the value matches the one the running daemon checks against.
+show_device_password() {
+    local dir="$REPO_DIR"
+    if [ -d "$INSTALL_DIR/app" ]; then
+        dir="$INSTALL_DIR"
+    fi
+
+    local python_bin="python3"
+    if [ -x "$dir/.venv/bin/python" ]; then
+        python_bin="$dir/.venv/bin/python"
+    fi
+
+    local password
+    password="$(cd "$dir" && "$python_bin" -c 'from app import device_password; print(device_password.get_device_password())' 2>/dev/null)"
+
+    if [ -n "$password" ]; then
+        log "Device Password: $password"
+    else
+        log "Warning: could not read the Device Password."
+    fi
+}
+
+open_web_ui() {
+    local url="http://127.0.0.1:$PORT/"
+
+    if ! server_is_up; then
+        if [ -f "$UNIT_DIR/faxomemo.service" ] && command -v systemctl >/dev/null 2>&1; then
+            log "Nothing on port $PORT yet. Starting the faxomemo service..."
+            systemctl --user start faxomemo || true
+            if ! wait_for_server 30; then
+                echo "Error: faxomemo did not start listening on port $PORT." >&2
+                echo "Check it with: journalctl --user -u faxomemo -n 50" >&2
+                exit 1
+            fi
+        else
+            echo "Error: nothing is listening on port $PORT." >&2
+            echo "Start faxomemo with './faxomemo', or install it as a service" >&2
+            echo "with './faxomemo --install-daemon' and try again." >&2
+            exit 1
+        fi
+    fi
+
+    show_device_password
+    log "Opening $url"
+    if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url" >/dev/null 2>&1 &
+    elif command -v open >/dev/null 2>&1; then
+        open "$url"
+    else
+        echo "$url"
+    fi
 }
 
 uninstall_daemon() {
@@ -484,6 +572,9 @@ main() {
 
     export PC1_PRINTER_DRIVER=phomemo
     export PC1_PHOMEMO_TRANSPORT="$TRANSPORT"
+    if [ "$SKIP_READY" -eq 1 ]; then
+        export PC1_SKIP_READY_PRINT=1
+    fi
     if [ "$TRANSPORT" = "usb" ]; then
         export PC1_PHOMEMO_USB_DEVICE="$(usb_device_path)"
     else
@@ -503,16 +594,20 @@ main() {
     else
         log "  PC1_PHOMEMO_BT_ADDRESS=${PC1_PHOMEMO_BT_ADDRESS:-}"
     fi
-    log "Command: $python_bin -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    log "Command: $python_bin -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         log "(dry-run) not starting the server."
         exit 0
     fi
 
-    exec "$python_bin" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    exec "$python_bin" -m uvicorn app.main:app --host 0.0.0.0 --port "$PORT"
 }
 
+if [ "$WEB" -eq 1 ]; then
+    open_web_ui
+    exit 0
+fi
 if [ "$UNINSTALL" -eq 1 ]; then
     uninstall_daemon
     exit 0

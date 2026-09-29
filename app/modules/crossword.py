@@ -15,6 +15,58 @@ DEFAULT_NUM_WORDS = 10
 MIN_NUM_WORDS = 3
 MAX_NUM_WORDS = 18
 
+# No-auth outlets verified working 2026-08-28, label -> xword-dl keyword.
+# Labels are the config values because the settings dropdown shows enum values verbatim.
+# Excluded: NYT family (needs subscription cookie), Guardian Prize (solution
+# withheld until the prize deadline), USA Today / Billboard / Observer (broken
+# upstream in xword-dl).
+OUTLETS = {
+    "New Yorker Mini": "tnym",
+    "LA Times Mini": "latm",
+    "Guardian Quick": "grdq",
+    "Simply Daily Quick": "sdpq",
+    "New Yorker": "tny",
+    "LA Times": "lat",
+    "Atlantic": "atl",
+    "Crossword Club": "club",
+    "Daily Beast": "db",
+    "Daily Pop": "pop",
+    "Der Standard": "std",
+    "Guardian Cryptic": "grdc",
+    "Guardian Everyman": "grde",
+    "Guardian Quiptic": "grdu",
+    "Guardian Speedy": "grds",
+    "Guardian Weekend": "grdw",
+    "Newsday": "nd",
+    "Princetonian": "prince",
+    "Princetonian Mini": "prince-mini",
+    "Puzzmo": "pzm",
+    "Puzzmo Big": "pzmb",
+    "Simply Daily": "sdp",
+    "Simply Daily Cryptic": "sdpc",
+    "Universal": "uni",
+    "Vox": "vox",
+    "Vulture": "vult",
+    "The Walrus": "wal",
+    "Washington Post": "wp",
+}
+DEFAULT_OUTLET = "New Yorker Mini"
+
+
+class PuzzleDownloadError(Exception):
+    pass
+
+
+def fetch_downloaded_puzzle(outlet: str):
+    """Fetch today's puzzle for an xword-dl outlet keyword as a puzpy Puzzle."""
+    import xword_dl
+
+    try:
+        puzzle, _filename = xword_dl.by_keyword(outlet)
+        return puzzle
+    except Exception as e:
+        raise PuzzleDownloadError(str(e)) from e
+
 
 def _clamp_num_words(value: Any) -> int:
     try:
@@ -314,16 +366,148 @@ def render_crossword_grid(generator: CrosswordGenerator, cell_size: int, font_pa
         
     return img
 
+def render_downloaded_grid(puzzle, cell_size: int, font_path: str = None) -> Image.Image:
+    """Renders a puzpy Puzzle grid as a 1-bit bitmap ('.' in fill = block)."""
+    img_w = puzzle.width * cell_size + 2
+    img_h = puzzle.height * cell_size + 2
+    img = Image.new("1", (img_w, img_h), 0)
+    draw = ImageDraw.Draw(img)
+
+    try:
+        num_font = ImageFont.truetype(font_path, max(8, cell_size // 3)) if font_path else ImageFont.load_default()
+    except Exception:
+        num_font = ImageFont.load_default()
+
+    for y in range(puzzle.height):
+        for x in range(puzzle.width):
+            if puzzle.fill[y * puzzle.width + x] != '.':
+                x0 = x * cell_size + 2
+                y0 = y * cell_size + 2
+                x1 = (x + 1) * cell_size - 1
+                y1 = (y + 1) * cell_size - 1
+                draw.rectangle([x0, y0, x1, y1], fill=1)
+
+    numbering = puzzle.clue_numbering()
+    num_cells = {}
+    for clue in numbering.across + numbering.down:
+        num_cells[clue['cell']] = clue['num']
+    for cell, num in num_cells.items():
+        x = cell % puzzle.width
+        y = cell // puzzle.width
+        draw.text((x * cell_size + 4, y * cell_size + 3), str(num), font=num_font, fill=0)
+
+    return img
+
+
+def render_upside_down_text(text: str, width_dots: int, font_path: str = None) -> Image.Image:
+    """Renders text as a 1-bit bitmap rotated 180 degrees (read by flipping the paper)."""
+    font_size = 18
+    try:
+        font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+
+    margin = 2
+    available = width_dots - margin * 2
+    lines = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}" if current else word
+        if font.getbbox(candidate)[2] <= available or not current:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+
+    ascent, descent = (font.getmetrics() if hasattr(font, "getmetrics") else (10, 3))
+    line_height = ascent + descent + 2
+    img = Image.new("1", (width_dots, line_height * max(1, len(lines)) + margin * 2), 1)
+    draw = ImageDraw.Draw(img)
+    for i, line in enumerate(lines):
+        draw.text((margin, margin + i * line_height), line, font=font, fill=0)
+    return img.rotate(180)
+
+
+def _print_answers_upside_down(printer, answers: List[str]):
+    printer.print_line()
+    width = getattr(printer, "PRINTER_WIDTH_DOTS", 384)
+    img = render_upside_down_text(
+        "SOLUTION: " + ", ".join(answers), width, _get_driver_font_path(printer)
+    )
+    printer.print_image(img)
+    printer.feed(1)
+
+
+def _slot_answer(puzzle, clue: Dict[str, Any], direction: str) -> str:
+    step = 1 if direction == "across" else puzzle.width
+    return "".join(
+        puzzle.solution[clue['cell'] + i * step] for i in range(clue['len'])
+    )
+
+
+def _get_driver_font_path(printer) -> Optional[str]:
+    if hasattr(printer, "_get_font"):
+        f = printer._get_font("regular")
+        if hasattr(f, "path"):
+            return f.path
+    return None
+
+
+def _print_downloaded(printer, puzzle, outlet: str, module_name: str = None):
+    printer.print_header(module_name or "CROSSWORD", icon="grid-nine")
+    printer.print_caption(format_print_datetime())
+    if puzzle.title:
+        printer.print_subheader(puzzle.title)
+    byline = " - ".join(p for p in [puzzle.author, outlet] if p)
+    if byline:
+        printer.print_caption(byline)
+    printer.feed(1)
+
+    printer_width = getattr(printer, "PRINTER_WIDTH_DOTS", 384)
+    cell_size = (printer_width - 2) // puzzle.width
+    grid_img = render_downloaded_grid(puzzle, cell_size, _get_driver_font_path(printer))
+    printer.print_image(grid_img)
+    printer.feed(1)
+
+    numbering = puzzle.clue_numbering()
+    if numbering.across:
+        printer.print_bold("ACROSS")
+        for clue in numbering.across:
+            printer.print_body(f"{clue['num']}. {clue['clue']}")
+        printer.feed(1)
+
+    if numbering.down:
+        printer.print_bold("DOWN")
+        for clue in numbering.down:
+            printer.print_body(f"{clue['num']}. {clue['clue']}")
+        printer.feed(1)
+
+    answers = [
+        f"{clue['num']}A:{_slot_answer(puzzle, clue, 'across')}" for clue in numbering.across
+    ] + [
+        f"{clue['num']}D:{_slot_answer(puzzle, clue, 'down')}" for clue in numbering.down
+    ]
+    _print_answers_upside_down(printer, answers)
+
+
 @register_module(
     type_id="crossword",
     label="Crossword",
-    description="Generates a crossword puzzle",
+    description="Generates or downloads a crossword puzzle",
     icon="grid-nine",
     offline=True,
     category="puzzles",
     config_schema={
         "type": "object",
         "properties": {
+            "source": {
+                "type": "string",
+                "title": "Source",
+                "enum": ["Generated", "Downloaded"],
+                "default": "Generated"
+            },
             "num_words": {
                 "type": "integer",
                 "title": "Number of Words",
@@ -336,19 +520,50 @@ def render_crossword_grid(generator: CrosswordGenerator, cell_size: int, font_pa
                 "title": "Difficulty",
                 "enum": ["Easy", "Medium", "Hard"],
                 "default": "Easy"
+            },
+            "outlet": {
+                "type": "string",
+                "title": "Daily Puzzle",
+                "enum": list(OUTLETS.keys()),
+                "default": DEFAULT_OUTLET
             }
         }
+    },
+    ui_schema={
+        "num_words": {"ui:showWhen": {"field": "source", "value": "Generated"}},
+        "difficulty": {"ui:showWhen": {"field": "source", "value": "Generated"}},
+        "outlet": {"ui:showWhen": {"field": "source", "value": "Downloaded"}},
     }
 )
 def execute_crossword(printer, config: Dict[str, Any], module_name: str = None):
     """Module entry point."""
+    if config.get("source", "Generated") == "Downloaded":
+        outlet = config.get("outlet", DEFAULT_OUTLET)
+        if outlet not in OUTLETS:
+            outlet = DEFAULT_OUTLET
+        try:
+            puzzle = fetch_downloaded_puzzle(OUTLETS[outlet])
+        except PuzzleDownloadError as e:
+            logger.warning(f"Crossword download failed for '{outlet}': {e}")
+            printer.print_header(module_name or "CROSSWORD", icon="grid-nine")
+            printer.print_caption(format_print_datetime())
+            printer.print_body(f"Download failed for {outlet}.")
+            printer.feed(1)
+            return
+        _print_downloaded(printer, puzzle, outlet, module_name)
+        return
+
+    _print_generated(printer, config, module_name)
+
+
+def _print_generated(printer, config: Dict[str, Any], module_name: str = None):
     num_words = _clamp_num_words(config.get("num_words", DEFAULT_NUM_WORDS))
     difficulty = config.get("difficulty", "Easy")
-    
+
     # Calculate dynamic block size to fill the paper width (384 dots)
     printer_width = getattr(printer, "PRINTER_WIDTH_DOTS", 384)
     block_size = (printer_width - 2) // GRID_WIDTH
-    
+
     # 1. Load word list
     app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     csv_path = os.path.join(app_dir, "data", "crossword_words.csv")
@@ -406,15 +621,7 @@ def execute_crossword(printer, config: Dict[str, Any], module_name: str = None):
     printer.feed(1)
 
     # 5. Print Grid
-    # Get font path from driver if possible to match styles
-    font_path = None
-    if hasattr(printer, "_get_font"):
-        # Attempt to find the path of a loaded font
-        f = printer._get_font("regular")
-        if hasattr(f, "path"):
-            font_path = f.path
-            
-    grid_img = render_crossword_grid(gen, block_size, font_path)
+    grid_img = render_crossword_grid(gen, block_size, _get_driver_font_path(printer))
     printer.print_image(grid_img)
     printer.feed(1)
 
@@ -435,14 +642,8 @@ def execute_crossword(printer, config: Dict[str, Any], module_name: str = None):
         printer.feed(1)
 
     # 7. Print Answer Key
-    printer.print_line()
-    printer.print_caption("Solution hidden below...")
-    printer.feed(10)
-    
-    # Compact answer string
     answers = []
     for clue in sorted(gen.words_placed, key=lambda x: x['num']):
         answers.append(f"{clue['num']}{clue['dir'][0].upper()}:{clue['word']}")
-    
-    printer.print_caption("ANSWERS: " + ", ".join(answers))
-    printer.feed(1)
+
+    _print_answers_upside_down(printer, answers)

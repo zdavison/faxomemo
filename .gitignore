@@ -36,6 +36,7 @@ config.json.bak
 .env.local
 .env.*.local
 .welcome_printed
+.schedule_state.json
 
 # Development (internal production tools & images)
 development/
@@ -77,6 +78,9 @@ NUL
 # Newsstand downloaded recipe cache
 app/data/newsstand_cache/
 
+# Daily chess puzzle cache
+app/data/chess_puzzle_cache/
+
 # GeoNames temporary download files
 app/data/*.zip
 app/data/*.txt
@@ -102,3 +106,6 @@ deploy.sh
 
 # faxomemo bootstrap script's persisted detection result
 .faxomemo.env
+
+# Optional phomymo label designer (scripts/fetch_label_designer.sh)
+vendor/

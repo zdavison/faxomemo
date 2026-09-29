@@ -21,6 +21,7 @@ Example usage:
         printer.print_body("Hello from my module!")
 """
 
+import copy
 from dataclasses import dataclass, field
 from typing import Dict, Any, Callable, Optional, List
 import logging
@@ -67,6 +68,45 @@ class ModuleDefinition:
 
 # Global registry of all modules
 _registry: Dict[str, ModuleDefinition] = {}
+
+# Universal option injected into every module's config schema so users can
+# suppress the module's name banner and print their own headings instead.
+SHOW_HEADER_PROPERTY = {
+    "type": "boolean",
+    "title": "Show Header",
+    "description": "Print the module's name banner at the top of the receipt",
+    "default": True,
+}
+
+
+def _with_show_header(config_schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if config_schema is None:
+        schema: Dict[str, Any] = {"type": "object", "properties": {}}
+    else:
+        schema = copy.deepcopy(config_schema)
+        schema.setdefault("properties", {})
+    schema["properties"].setdefault("show_header", dict(SHOW_HEADER_PROPERTY))
+    return schema
+
+
+class HeaderSuppressedPrinter:
+    """Delegates to the wrapped printer but drops print_header calls."""
+
+    def __init__(self, printer):
+        self._printer = printer
+
+    def __getattr__(self, name):
+        return getattr(self._printer, name)
+
+    def print_header(self, *args, **kwargs):
+        pass
+
+
+def printer_for_config(printer, config: Optional[Dict[str, Any]]):
+    """Return the printer to hand a module, honoring its show_header option."""
+    if config and config.get("show_header") is False:
+        return HeaderSuppressedPrinter(printer)
+    return printer
 
 
 def register_module(
@@ -122,7 +162,7 @@ def register_module(
             offline=offline,
             interactive=interactive,
             execute_fn=fn,
-            config_schema=config_schema,
+            config_schema=_with_show_header(config_schema),
             ui_schema=ui_schema,
             config_class=config_class,
             category=category,
@@ -209,7 +249,7 @@ def execute_module_by_type(
         # All modules follow the signature: (printer, config, module_name)
         # Some may use config differently (e.g., email uses 'messages' parameter)
         # but the standard call works for most modules
-        defn.execute_fn(printer, config, module_name)
+        defn.execute_fn(printer_for_config(printer, config), config, module_name)
         return True
     except Exception as e:
         logger.error(f"Error executing module '{module_type}': {e}", exc_info=True)

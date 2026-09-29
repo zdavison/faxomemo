@@ -682,12 +682,13 @@ const SchemaField = ({
     
     // 3. BOOLEANS
     if (type === 'boolean') {
+        const checked = (value ?? schema.default) || false;
         return (
             <div className={compact ? 'mb-0' : 'mb-6'}>
                 <div className={`flex items-start gap-3 ${compact ? 'py-0' : 'py-0.5'}`}>
-                <input 
+                <input
                     type="checkbox"
-                    checked={value || false}
+                    checked={checked}
                     onChange={(e) => {
                         onUserInteraction();
                         onChange(e.target.checked);
@@ -699,7 +700,7 @@ const SchemaField = ({
                   className="cursor-pointer select-none"
                   onClick={() => {
                     onUserInteraction();
-                    onChange(!value);
+                    onChange(!checked);
                   }}>
                     {title ? (
                         <div className={`text-sm text-black ${compact ? 'font-medium' : ''}`}>

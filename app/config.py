@@ -10,14 +10,25 @@ import logging
 PRINTER_WIDTH = 42
 
 PRINTER_DRIVER = os.environ.get("PC1_PRINTER_DRIVER", "auto").strip().lower()
-PAPER_WIDTH_MM = float(os.environ.get("PC1_PAPER_WIDTH_MM", "57"))
+# Printable width, not paper width: 57/58mm stock has a 54mm print band.
+PAPER_WIDTH_MM = float(os.environ.get("PC1_PAPER_WIDTH_MM", "54"))
 PAPER_WIDTH_DOTS = int(PAPER_WIDTH_MM * 8) // 8 * 8
 if PRINTER_DRIVER == "phomemo":
     PRINTER_WIDTH = max(20, PAPER_WIDTH_DOTS * 42 // 384)
 PHOMEMO_TRANSPORT = os.environ.get("PC1_PHOMEMO_TRANSPORT", "usb").strip().lower()
 PHOMEMO_USB_DEVICE = os.environ.get("PC1_PHOMEMO_USB_DEVICE", "/dev/usb/lp0")
 PHOMEMO_BT_ADDRESS = os.environ.get("PC1_PHOMEMO_BT_ADDRESS", "")
-PHOMEMO_MEDIA_TYPE = int(os.environ.get("PC1_PHOMEMO_MEDIA_TYPE", "11"))  # 11=continuous, 10=gap labels, 38=black marks (phomemo-tools .drv)
+MEDIA_TYPE_GAP = 10
+MEDIA_TYPE_CONTINUOUS = 11
+MEDIA_TYPE_BLACK_MARK = 38
+PHOMEMO_MEDIA_TYPE = int(os.environ.get("PC1_PHOMEMO_MEDIA_TYPE", str(MEDIA_TYPE_CONTINUOUS)))
+
+
+def env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes")
+
+
+SKIP_READY_PRINT = env_flag("PC1_SKIP_READY_PRINT")
 
 DEFAULT_CUTTER_FEED_LINES = 7
 logger = logging.getLogger(__name__)
@@ -324,6 +335,9 @@ class Settings(BaseModel):
     release_channel: Literal["stable", "beta"] = "stable"
     max_print_lines: int = 200  # Maximum lines per print job (0 = no limit)
     theme: str = "light"  # Web UI theme: "light", "dark", or "system"
+    # False suppresses automatic prints (cron, chat bridges, webhooks) while
+    # leaving manual ones alone, so the device can be used as a label printer.
+    printing_enabled: bool = True
 
     # Module Instances: Dictionary of module_id -> ModuleInstance
     # These are reusable module configurations that can be assigned to channels

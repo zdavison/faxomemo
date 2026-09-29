@@ -451,3 +451,129 @@ def test_get_rss_articles_keeps_total_receipt_length_capped(monkeypatch):
     )
 
     assert len(articles) == 10
+
+
+def _weather_sections_setup(monkeypatch):
+    weather_module.clear_weather_cache()
+    payload = {
+        "ok": True,
+        "city": "Worcester",
+        "current": 72,
+        "condition": "Clear",
+        "high": 75,
+        "low": 65,
+        "forecast": [
+            {
+                "day": "Today",
+                "date": "5/12",
+                "high": 75,
+                "low": 65,
+                "condition": "Clear",
+                "precipitation": 0,
+            }
+        ],
+        "hourly_forecast": [
+            {
+                "time": "11 AM",
+                "hour": "11",
+                "hour_iso": "2026-05-12T11:00",
+                "temperature": 72,
+                "condition": "Clear",
+                "precipitation": 0,
+            }
+        ],
+        "temperature_unit": "fahrenheit",
+    }
+    monkeypatch.setattr(weather_module, "get_weather", lambda *_a, **_k: dict(payload))
+    monkeypatch.setattr(
+        weather_module, "current_datetime", lambda: datetime(2026, 5, 12, 11, 0, 0)
+    )
+    monkeypatch.setattr(weather_module, "_build_24_hour_summary", lambda *_a, **_k: "Mild and clear.")
+    drawn = []
+    monkeypatch.setattr(
+        weather_module,
+        "draw_current_conditions_panel",
+        lambda *_a, **_k: drawn.append("current") or object(),
+    )
+    monkeypatch.setattr(
+        weather_module,
+        "draw_hourly_forecast_image",
+        lambda *_a, **_k: drawn.append("hourly") or object(),
+    )
+    monkeypatch.setattr(
+        weather_module,
+        "draw_weather_forecast_image",
+        lambda *_a, **_k: drawn.append("daily") or object(),
+    )
+    return drawn
+
+
+def test_format_weather_receipt_prints_all_sections_by_default(monkeypatch):
+    drawn = _weather_sections_setup(monkeypatch)
+    printer = _WeatherPrinter()
+
+    weather_module.format_weather_receipt(printer, {}, "WEATHER")
+
+    output = "\n".join(printer.lines)
+    assert drawn == ["current", "hourly", "daily"]
+    assert "Mild and clear." in output
+    assert "12-HOUR FORECAST" in output
+    assert "5-DAY FORECAST" in output
+
+
+def test_format_weather_receipt_can_disable_hourly_section(monkeypatch):
+    drawn = _weather_sections_setup(monkeypatch)
+    printer = _WeatherPrinter()
+
+    weather_module.format_weather_receipt(printer, {"show_hourly": False}, "WEATHER")
+
+    output = "\n".join(printer.lines)
+    assert "12-HOUR FORECAST" not in output
+    assert "hourly" not in drawn
+    assert "5-DAY FORECAST" in output
+    assert "Mild and clear." in output
+
+
+def test_format_weather_receipt_can_disable_daily_section(monkeypatch):
+    drawn = _weather_sections_setup(monkeypatch)
+    printer = _WeatherPrinter()
+
+    weather_module.format_weather_receipt(printer, {"show_daily": False}, "WEATHER")
+
+    output = "\n".join(printer.lines)
+    assert "5-DAY FORECAST" not in output
+    assert "daily" not in drawn
+    assert "12-HOUR FORECAST" in output
+
+
+def test_format_weather_receipt_can_disable_summary_section(monkeypatch):
+    _weather_sections_setup(monkeypatch)
+    printer = _WeatherPrinter()
+
+    weather_module.format_weather_receipt(printer, {"show_summary": False}, "WEATHER")
+
+    output = "\n".join(printer.lines)
+    assert "Mild and clear." not in output
+    assert "12-HOUR FORECAST" in output
+
+
+def test_format_weather_receipt_can_disable_current_conditions_section(monkeypatch):
+    drawn = _weather_sections_setup(monkeypatch)
+    printer = _WeatherPrinter()
+
+    weather_module.format_weather_receipt(printer, {"show_current": False}, "WEATHER")
+
+    output = "\n".join(printer.lines)
+    assert "current" not in drawn
+    assert "12-HOUR FORECAST" in output
+    assert "5-DAY FORECAST" in output
+
+
+def test_weather_config_schema_exposes_section_toggles():
+    from app.module_registry import get_module
+
+    schema = get_module("weather").config_schema
+    properties = schema["properties"]
+    for key in ("show_current", "show_summary", "show_hourly", "show_daily"):
+        assert properties[key]["type"] == "boolean"
+        assert properties[key]["default"] is True

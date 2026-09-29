@@ -140,7 +140,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--backend-url",
-        default="http://127.0.0.1:8000",
+        default="http://127.0.0.1:3290",
         help="Backend URL used by Vite proxy.",
     )
     parser.add_argument(
@@ -214,7 +214,7 @@ def main() -> int:
         if not args.reuse_servers:
             child_env["PC1_DEVICE_PASSWORD"] = settings_password
             python_exec = _python_exec()
-            backend_port = _parse_port(args.backend_url, 8000)
+            backend_port = _parse_port(args.backend_url, 3290)
             frontend_port = _parse_port(args.frontend_url, 5173)
 
             backend_cmd = [

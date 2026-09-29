@@ -51,11 +51,34 @@ All rules run in the device timezone (`settings.timezone`). Per-rule timezones a
 
 The scheduler (`scheduler_loop()` in `app/main.py`) ticks every 10 seconds but evaluates each minute exactly once. `current_datetime()` already returns local time in the configured timezone, so cron expressions are matched against local wall-clock minutes with `croniter.match()`. A channel prints at most once per matched minute, even when multiple rules overlap. Invalid rules are skipped with a warning and never break the loop.
 
+The loop skips the whole minute while the global printing switch is off. It records nothing for a slot it skips, so the slot stays pending and catch-up prints it on resume.
+
+## Catch-Up
+
+A device that was switched off at 8am still prints its 8am schedule when it comes back on. `_run_schedule_catchup()` (`app/main.py`) finds, for each channel, the most recent fire time between local midnight and now (`latest_fire_time_today()`). If that slot is newer than what the channel last printed, the channel prints once, with a `Catch-up for 8:00 AM` caption at the top of the receipt.
+
+Bounds on the behavior:
+
+- **Current day only.** Slots from yesterday are never caught up.
+- **At most one print per channel.** Three missed slots produce one print, for the latest of them.
+- **Once, not once per boot.** Each scheduled print — from the loop or from catch-up — is recorded in `.schedule_state.json` at the repo root (`app/schedule_state.py`), so restarting the service later the same day does not reprint.
+
+Two callers run the catch-up:
+
+- `run_startup_schedule_catchup()` waits 20 seconds at startup for boot receipts to clear, then runs it.
+- `POST /api/printing` runs it when the global printing switch goes from off to on.
+
+The catch-up returns at once while the switch is off. Catch-up prints run with `scheduled=False`, unlike on-the-dot prints. That flag restricts weather modules to prefetched data so a scheduled print never blocks on a slow API; a catch-up print has no prefetch behind it and is late already, so it fetches live instead.
+
+If the printer is busy, catch-up retries every 30 seconds for up to 10 minutes, then gives up without recording anything. Unreadable or corrupt state reads as empty, which means at most one extra print, never a suppressed one.
+
 ## Weather Prefetch Integration
 
 Weather modules on scheduled channels are pre-warmed 2-4 minutes before each scheduled print (`_run_weather_prefetch_cycle()`), because on-the-dot weather API calls can be slow or time out. Upcoming fire times are computed from the cron rules with `next_fire_times()` in `app/schedule_utils.py`, so prefetch works for cron rules exactly as it did for legacy HH:MM schedules. The per-module hash offset that spreads API calls across the warm-up window is unchanged.
 
 ## API
+
+`GET /api/printing` returns `{"enabled": bool}`. `POST /api/printing` takes the same shape and turns automatic printing on or off. Off blocks the scheduler, the chat bridges and incoming webhooks. Off does not block manual prints from the web UI or the physical button, so you can still print labels.
 
 `POST /api/channels/{position}/schedule` accepts two payload shapes:
 
@@ -83,6 +106,8 @@ Invalid expressions are rejected with HTTP 400 and a user-facing message. Saving
 | `normalize_schedule_rules()` | Validates and de-duplicates an incoming rule payload |
 | `cron_matches_minute()` | True when an expression matches the given minute |
 | `next_fire_times()` | Upcoming fire datetimes within a horizon (weather prefetch) |
+| `latest_fire_time_today()` | Most recent fire since local midnight (startup catch-up) |
+| `format_clock_time()` | Clock-time label for a datetime (respects 12h/24h preference) |
 | `resolve_timezone_name()` | Validates a timezone string with safe fallback |
 
 ## Frontend
@@ -99,3 +124,5 @@ Channels may still carry a `schedule` field (a list of `HH:MM` strings) from bef
 
 - `testing/test_schedule.py` — unit tests for `schedule_utils`
 - `testing/test_scheduler_integration.py` — scheduler loop, API payloads, weather prefetch interplay
+- `testing/test_schedule_catchup.py` — missed-slot detection, state persistence, startup catch-up
+- `testing/test_print_pause.py` — the printing switch, the reservation gate, catch-up on resume

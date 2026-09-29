@@ -6,7 +6,7 @@ All schedule rules are evaluated in the device's configured timezone
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time as time_of_day, timedelta
 from typing import Iterable, List, Optional, Sequence
 
 from croniter import croniter
@@ -105,6 +105,11 @@ def _format_time_label(hour: int, minute: int, time_format: str) -> str:
     suffix = "AM" if hour < 12 else "PM"
     display_hour = hour % 12 or 12
     return f"{display_hour}:{minute:02d} {suffix}"
+
+
+def format_clock_time(moment: datetime, time_format: str = "12h") -> str:
+    """Clock-time label for a datetime, matching schedule label formatting."""
+    return _format_time_label(moment.hour, moment.minute, time_format)
 
 
 def _weekday_label(weekday_field: str) -> Optional[str]:
@@ -215,3 +220,43 @@ def next_fire_times(
             upcoming.add(fire_at)
 
     return sorted(upcoming)
+
+
+def _start_of_day(now: datetime) -> datetime:
+    """Local midnight for ``now``'s date, preserving its timezone."""
+    midnight = datetime.combine(now.date(), time_of_day.min)
+    tzinfo = now.tzinfo
+    if tzinfo is None:
+        return midnight
+    localize = getattr(tzinfo, "localize", None)
+    if localize is not None:
+        return localize(midnight)
+    return midnight.replace(tzinfo=tzinfo)
+
+
+def latest_fire_time_today(
+    expressions: Iterable[str],
+    now: datetime,
+) -> Optional[datetime]:
+    """Most recent fire time between local midnight and ``now``, if any.
+
+    Used to decide whether a scheduled print was missed while the device
+    was off. Fire times from earlier days are never returned.
+    """
+    day_start = _start_of_day(now)
+    # croniter's get_prev is strictly-before, so search from the next minute
+    # to keep a rule that fires during the current minute in scope.
+    search_from = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    latest: Optional[datetime] = None
+
+    for expression in expressions:
+        try:
+            fire_at = croniter(expression, search_from).get_prev(datetime)
+        except Exception:
+            continue
+        if fire_at < day_start:
+            continue
+        if latest is None or fire_at > latest:
+            latest = fire_at
+
+    return latest

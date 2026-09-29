@@ -76,9 +76,23 @@ def expire_stale_hold_action_locked(current_time: float):
     )
 
 
-def try_begin_print_job(*, debounce: bool = False) -> bool:
-    """Reserve the printer for a new print job."""
+def printing_paused() -> bool:
+    """True when the global printing switch is off."""
+    import app.config as config_module
+
+    return not getattr(config_module.settings, "printing_enabled", True)
+
+
+def try_begin_print_job(*, debounce: bool = False, manual: bool = False) -> bool:
+    """Reserve the printer for a new print job.
+
+    ``manual`` marks a job the user asked for directly (button, web UI), which
+    still prints while the global switch is off.
+    """
     global print_in_progress, last_print_time
+
+    if not manual and printing_paused():
+        return False
 
     with print_lock:
         current_time = time.time()

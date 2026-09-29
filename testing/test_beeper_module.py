@@ -1,6 +1,9 @@
+import json
 import types
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 
 import app.config as config
@@ -507,3 +510,101 @@ def test_status_receipt_connecting_and_disconnected():
             module_id="beeper-3",
         )
         assert any(label in line for line in printer.lines)
+
+
+# --- WEBSOCKET SUBSCRIPTION ---
+
+
+class _FakeWS:
+    """Minimal aiohttp WebSocket stand-in that replays scripted frames."""
+
+    def __init__(self, frames):
+        self.sent = []
+        self._frames = list(frames)
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._frames:
+            raise StopAsyncIteration
+        frame = self._frames.pop(0)
+        return types.SimpleNamespace(
+            type=aiohttp.WSMsgType.TEXT, data=frame, json=lambda f=frame: json.loads(f)
+        )
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _ws_connection(frames):
+    conn = _make_connection()
+    ws = _FakeWS(frames)
+    conn._session = MagicMock()
+    conn._session.ws_connect = MagicMock(return_value=ws)
+    return conn, ws
+
+
+@pytest.mark.asyncio
+async def test_subscribe_frame_uses_chat_ids_key():
+    """Beeper Desktop rejects a 'subscriptions' key; the field is 'chatIDs'."""
+    conn, ws = _ws_connection([])
+    with pytest.raises(ConnectionError):
+        await conn._listen_ws()
+    assert ws.sent == [{"type": "subscriptions.set", "chatIDs": ["*"]}]
+
+
+@pytest.mark.asyncio
+async def test_error_frame_drops_the_websocket_so_polling_takes_over():
+    """A rejected subscription must not leave a silent, event-free socket open."""
+    conn, ws = _ws_connection(
+        [
+            '{"type":"error","code":"INVALID_PAYLOAD","message":"Unrecognized key(s)"}',
+            '{"type":"message.upserted","chatID":"chat-1"}',
+        ]
+    )
+    conn._fetch_new_messages = AsyncMock(return_value=[])
+    with pytest.raises(ConnectionError):
+        await conn._listen_ws()
+    assert ws._frames, "listener kept reading past the error frame"
+
+
+# --- FIRST MESSAGE PER CHAT ---
+
+
+def _cursor_connection(items, started_at):
+    conn = _make_connection()
+    conn._started_at = started_at
+    conn._api_get = AsyncMock(
+        return_value={"items": items, "newestCursor": "cur-2"}
+    )
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_first_message_in_an_unseen_chat_is_not_swallowed():
+    """Seeding a chat's cursor must not eat the message that triggered it."""
+    started = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+    fresh = _msg(mid="new", timestamp="2026-08-28T13:30:47.220Z")
+    conn = _cursor_connection([fresh], started)
+
+    got = await conn._fetch_new_messages("chat-1")
+
+    assert [m["id"] for m in got] == ["new"]
+    assert conn._cursors["chat-1"] == "cur-2"
+
+
+@pytest.mark.asyncio
+async def test_backlog_older_than_the_connection_is_still_skipped():
+    started = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+    old = _msg(mid="old", timestamp="2026-08-27T09:00:00.000Z")
+    conn = _cursor_connection([old], started)
+
+    assert await conn._fetch_new_messages("chat-1") == []
+    assert conn._cursors["chat-1"] == "cur-2"

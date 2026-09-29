@@ -20,6 +20,7 @@ import asyncio
 import logging
 import re
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import aiohttp
@@ -79,6 +80,7 @@ class BeeperConnection:
         self._session: Optional[aiohttp.ClientSession] = None
         self._task: Optional[asyncio.Task] = None
         self._cursors: Dict[str, Optional[str]] = {}
+        self._started_at: Optional[datetime] = None
         self._seen_ids: set = set()
         self._seen_order: deque = deque()
         # Participant cache per chat id: senderID -> {name, username, network}.
@@ -125,6 +127,7 @@ class BeeperConnection:
         )
         self.status = "connected"
         self.detail = ""
+        self._started_at = datetime.now(timezone.utc)
         self._task = asyncio.create_task(self._run())
         logger.info(
             "Beeper module %s connected (%d accounts: %s)",
@@ -197,7 +200,7 @@ class BeeperConnection:
     async def _listen_ws(self):
         ws_url = re.sub(r"^http", "ws", self.api_url) + "/v1/ws"
         async with self._session.ws_connect(ws_url, heartbeat=30) as ws:
-            await ws.send_json({"type": "subscriptions.set", "subscriptions": ["*"]})
+            await ws.send_json({"type": "subscriptions.set", "chatIDs": ["*"]})
             self.status = "connected"
             async for msg in ws:
                 if msg.type != aiohttp.WSMsgType.TEXT:
@@ -211,6 +214,12 @@ class BeeperConnection:
                     event = msg.json()
                 except ValueError:
                     continue
+                if event.get("type") == "error":
+                    # A socket the server has rejected still stays open and
+                    # silent, so drop it and let the REST poll take over.
+                    raise ConnectionError(
+                        f"Beeper WebSocket error: {event.get('message') or event}"
+                    )
                 await self._handle_ws_event(event)
         raise ConnectionError("Beeper WebSocket closed")
 
@@ -244,14 +253,15 @@ class BeeperConnection:
     async def _fetch_new_messages(self, chat_id: str) -> List[Dict[str, Any]]:
         """Fetch messages newer than the saved cursor for one chat.
 
-        The first fetch for a chat only records the newest cursor ("now"),
-        so the startup backlog is never printed.
+        The first fetch for a chat has no cursor to page from, so it falls
+        back to timestamps: only messages that arrived after this connection
+        opened are returned, which keeps the startup backlog unprinted.
         """
         cursor = self._cursors.get(chat_id)
         if cursor is None:
             data = await self._api_get(f"/v1/chats/{chat_id}/messages")
             self._cursors[chat_id] = data.get("newestCursor")
-            return []
+            return [m for m in (data.get("items") or []) if self._arrived_live(m)]
 
         data = await self._api_get(
             f"/v1/chats/{chat_id}/messages",
@@ -260,6 +270,21 @@ class BeeperConnection:
         if data.get("newestCursor"):
             self._cursors[chat_id] = data["newestCursor"]
         return data.get("items", []) or []
+
+    def _arrived_live(self, msg: Dict[str, Any]) -> bool:
+        """True if the message post-dates this connection. Unparseable
+        timestamps count as backlog so a bad clock cannot dump old chats."""
+        if self._started_at is None:
+            return False
+        try:
+            ts = datetime.fromisoformat(
+                str(msg.get("timestamp") or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts >= self._started_at
 
     # --- SENDER RESOLUTION ---
 

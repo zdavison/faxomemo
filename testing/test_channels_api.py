@@ -116,7 +116,7 @@ def test_set_dial_rejects_position_zero(monkeypatch):
 def test_print_channel_accepts_position_beyond_eight(monkeypatch):
     settings = _settings_with_channels([12])
     monkeypatch.setattr(main_module, "settings", settings)
-    monkeypatch.setattr(main_module, "try_begin_print_job", lambda debounce=False: True)
+    monkeypatch.setattr(main_module, "try_begin_print_job", lambda debounce=False, manual=False: True)
 
     response = asyncio.run(main_module.print_channel(12, BackgroundTasks()))
 

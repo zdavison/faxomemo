@@ -10,7 +10,12 @@ from app.drivers.printer_serial import PrinterDriver as SerialPrinterDriver
 
 logger = logging.getLogger(__name__)
 
-MAX_LINES_PER_BLOCK = 1200  # M220 firmware rejects GS v 0 blocks taller than this
+# This M220's firmware prints nothing for GS v 0 blocks taller than this,
+# and it inserts a fixed blank feed between blocks. So: split, seam at a
+# blank row, and swallow that much blank content so the inserted feed
+# restores the intended spacing.
+MAX_LINES_PER_BLOCK = 1200
+SEAM_SEARCH_ROWS = 240  # how far above the split point to look for a blank row
 MAX_IDLE_WAIT = 15.0  # upper bound on wait_for_idle's lines/200 estimate
 
 _INVERT_TABLE = bytes(b ^ 0xFF for b in range(256))
@@ -24,6 +29,13 @@ class PrinterDriver(SerialPrinterDriver):
     and I/O transport: no serial port, no busy GPIO pin, no ESC/POS status
     channel.
     """
+
+    # Measured on the M220: each raster block boundary inserts 7.5-11.5mm of
+    # blank paper (8mm static feed plus variable re-grip slip). Compensate
+    # for the MINIMUM so a seam is never tighter than the designed layout;
+    # the variable remainder shows as a few mm of extra whitespace at worst.
+    # Model-specific — re-measure before reusing for other Phomemo models.
+    BLOCK_GAP_ROWS = 60
 
     def __init__(self, width: int = 49, transport=None, width_dots: int = None):
         super().__init__(width=width, init_serial=False)
@@ -112,19 +124,46 @@ class PrinterDriver(SerialPrinterDriver):
         out += b"\x1b\x4e\x04\x0a"  # density 10
         out += b"\x1f\x11" + bytes([self.media_type])  # media type
 
-        line = 0
         row_bytes = bytes_per_line
+        blank_row = bytes(row_bytes)
+
+        def is_blank(row: int) -> bool:
+            return pixels[row * row_bytes : (row + 1) * row_bytes] == blank_row
+
+        line = 0
         while line < height:
-            lines = min(MAX_LINES_PER_BLOCK, height - line)
+            remaining = height - line
+            lines = min(remaining, MAX_LINES_PER_BLOCK)
+            if remaining > MAX_LINES_PER_BLOCK:
+                lowest = max(line + 1, line + lines - SEAM_SEARCH_ROWS)
+                for row in range(line + lines - 1, lowest - 1, -1):
+                    if is_blank(row):
+                        # Back the seam up through the blank run so the rows
+                        # below it are swallowable, up to one gap's worth.
+                        seam = row
+                        while (
+                            seam > line + 1
+                            and row - seam < self.BLOCK_GAP_ROWS
+                            and is_blank(seam - 1)
+                        ):
+                            seam -= 1
+                        lines = seam - line + 1
+                        break
+
             out += b"\x1d\x76\x30\x00"
             out += bytes_per_line.to_bytes(2, "little")
             out += lines.to_bytes(2, "little")
-
-            chunk_start = line * row_bytes
-            chunk_end = chunk_start + lines * row_bytes
-            out += pixels[chunk_start:chunk_end]
+            out += pixels[line * row_bytes : (line + lines) * row_bytes]
 
             line += lines
+
+            # The firmware inserts BLOCK_GAP_ROWS of blank feed here; swallow
+            # the same amount of blank content so spacing is preserved. Never
+            # swallow ink — a seam forced through content just keeps the gap.
+            skipped = 0
+            while line < height and skipped < self.BLOCK_GAP_ROWS and is_blank(line):
+                line += 1
+                skipped += 1
 
         out += b"\x1f\xf0\x05\x00\x1f\xf0\x03\x00"  # footer
         return bytes(out)

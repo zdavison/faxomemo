@@ -1,9 +1,16 @@
 import json
 import random
-from typing import Dict, Any
+import re
+from datetime import date
+from typing import Dict, Any, Optional
 from pathlib import Path
+
+import requests
+
 from app.config import format_print_datetime
 from app.module_registry import register_module
+
+WIKIQUOTE_API_URL = "https://en.wikiquote.org/w/api.php"
 
 
 # Resolve path relative to the app package directory.
@@ -46,12 +53,58 @@ def get_random_quote() -> Dict[str, str]:
         }
 
 
+def _strip_wikitext(text: str) -> str:
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"<br\s*/?>", " ", text)
+    text = re.sub(r"\[\[[^\]|]*\|([^\]]*)\]\]", r"\1", text)
+    text = re.sub(r"\[\[([^\]]*)\]\]", r"\1", text)
+    text = text.replace("''", "")
+    return " ".join(text.split())
+
+
+def _extract_template_field(wikitext: str, field: str) -> str:
+    match = re.search(
+        rf"\|\s*{field}\s*=\s*(.*?)(?=\n\s*\|\s*\w+\s*=|\n\s*}}}})",
+        wikitext,
+        flags=re.DOTALL,
+    )
+    return match.group(1) if match else ""
+
+
+def get_wikiquote_qotd() -> Optional[Dict[str, str]]:
+    """Fetches today's curated Quote of the Day from English Wikiquote."""
+    today = date.today()
+    page = f"Wikiquote:Quote of the day/{today:%B} {today.day}, {today.year}"
+    try:
+        response = requests.get(
+            WIKIQUOTE_API_URL,
+            params={
+                "action": "parse",
+                "page": page,
+                "format": "json",
+                "prop": "wikitext",
+            },
+            # Wikimedia rejects the default python-requests UA with a 403.
+            headers={"User-Agent": "faxomemo/1.0 (thermal receipt printer)"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        wikitext = response.json()["parse"]["wikitext"]["*"]
+        quote = _strip_wikitext(_extract_template_field(wikitext, "quote"))
+        author = _strip_wikitext(_extract_template_field(wikitext, "author"))
+        if not quote:
+            return None
+        return {"quoteText": quote, "quoteAuthor": author or "Unknown"}
+    except Exception:
+        return None
+
+
 @register_module(
     type_id="quotes",
     label="Daily Quote",
-    description="Prints a random inspirational quote from offline database (5000+ quotes)",
+    description="Prints Wikiquote's curated Quote of the Day (falls back to offline database)",
     icon="quotes",
-    offline=True,
+    offline=False,
     category="content",
     config_schema={
         "type": "object",
@@ -61,8 +114,8 @@ def get_random_quote() -> Dict[str, str]:
 def format_quotes_receipt(
     printer, config: Dict[str, Any] = None, module_name: str = None
 ):
-    """Prints a random quote."""
-    quote = get_random_quote()
+    """Prints today's Wikiquote quote, or a random local one when offline."""
+    quote = get_wikiquote_qotd() or get_random_quote()
     text = quote.get("quoteText", "")
     author = quote.get("quoteAuthor", "Unknown")
 

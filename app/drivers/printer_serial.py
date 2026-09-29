@@ -688,7 +688,12 @@ class PrinterDriver:
         if not image:
             return (0, 0)
             
-        target_width = self._get_content_width()
+        # A designed label is the whole printable area, not content on a receipt:
+        # any margin or centring shifts it off the label stock.
+        flush_left = op_data.get("align") == "left"
+        target_width = (
+            self.PRINTER_WIDTH_DOTS if flush_left else self._get_content_width()
+        )
         final_height = image.height
         
         if image.width > target_width:
@@ -703,11 +708,17 @@ class PrinterDriver:
             if img_to_draw.mode != "1":
                 img_to_draw = img_to_draw.convert("1")
                 
-            img_x = self._get_left_margin() + (target_width - img_to_draw.width) // 2
-            # SPACING_SMALL top margin
-            img_y = y + self.SPACING_SMALL
+            if flush_left:
+                img_x = 0
+                img_y = y
+            else:
+                img_x = self._get_left_margin() + (target_width - img_to_draw.width) // 2
+                # SPACING_SMALL top margin
+                img_y = y + self.SPACING_SMALL
             img.paste(img_to_draw, (img_x, img_y))
         
+        if flush_left:
+            return (final_height, 0)
         return (final_height + self.SPACING_SMALL, self.SPACING_MEDIUM)  # Height + top margin
 
     def _render_op_qr(self, img: Image.Image, y: int, op_data: dict, dry_run: bool) -> tuple[int, int]:
@@ -852,9 +863,19 @@ class PrinterDriver:
         # Remove trailing spacing
         measured_content_height -= last_spacing
         
+        # A designed label must be exactly its own height. The clearance below
+        # would print past the label's trailing edge and shift the design up.
+        is_label = (
+            len(ops) == 1
+            and ops[0][0] == "image"
+            and ops[0][1].get("align") == "left"
+        )
+
         # Content-only bitmap height. Cutter feed is now applied explicitly
         # after bitmap transmission for more consistent behavior across printers.
-        total_height = measured_content_height + (self.SPACING_LARGE * 2)
+        total_height = measured_content_height
+        if not is_label:
+            total_height += self.SPACING_LARGE * 2
         
         # Create Image
         width = self.PRINTER_WIDTH_DOTS
@@ -1520,16 +1541,18 @@ class PrinterDriver:
 
 
 
-    def print_image(self, image: Image.Image):
+    def print_image(self, image: Image.Image, align: str = "center"):
         """Print a generic PIL Image.
 
         The image will be:
         1. Resized to fit the paper width if too wide (maintaining aspect ratio).
-        2. Centered horizontally.
+        2. Centered horizontally, or placed flush against the paper edge with
+           align="left" for a designed label that occupies the whole stock.
         3. Converted to 1-bit monochrome if not already.
 
         Args:
             image: PIL Image object
+            align: "center" for receipt content, "left" for a full label bitmap
         """
         if not image:
             return
@@ -1542,6 +1565,7 @@ class PrinterDriver:
                 "image",
                 {
                     "image": image,
+                    "align": align,
                 },
             )
         )

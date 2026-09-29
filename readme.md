@@ -27,12 +27,17 @@ Use a Unix-like shell for project commands: Linux, macOS, or WSL on Windows
 ./run.sh
 
 # Or run directly
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 3290 --reload
 ```
 
 * **API Docs:** 
-  * Local: [http://localhost:8000/docs](http://localhost:8000/docs)
+  * Local: [http://localhost:3290/docs](http://localhost:3290/docs)
 * **Mock Output:** Watch your Terminal window. The "Printer" writes text there.
+
+To open the UI without remembering the port, run `./faxomemo web`. It prints the
+Device Password the settings page asks for, starts the installed service if
+nothing is listening, then opens the browser. Set `FAXOMEMO_PORT` to use a port
+other than 3290.
 
 **Frontend (Settings UI):**
 ```bash
@@ -120,7 +125,7 @@ cd web && npm install
 2. **Run the Server:**
    ```bash
    ./run.sh
-   # Or: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   # Or: uvicorn app.main:app --host 0.0.0.0 --port 3290 --reload
    ```
 
 ### Docker (Software-Only / Mock Printer)
@@ -154,11 +159,11 @@ If you want to run PC-1 without Raspberry Pi hardware, you can also run the app 
 
 3. **Run the container:**
    ```bash
-   docker run --rm -it -p 8000:8000 local/pc-1
+   docker run --rm -it -p 3290:3290 local/pc-1
    ```
 
 4. **Open the app:**
-   Visit `http://localhost:8000` in your browser.
+   Visit `http://localhost:3290` in your browser.
 
 5. **Find the device password:**
    Check the container logs for the printed setup output, especially the `STEP 1: CONNECT TO WIFI` section.
@@ -192,7 +197,7 @@ If you want to run PC-1 without Raspberry Pi hardware, you can also run the app 
 
 ## 3. Configuration
 
-Configuration is handled entirely via the **Web UI** at `http://pc-1.local` (or `http://localhost:8000`).
+Configuration is handled entirely via the **Web UI** at `http://pc-1.local` (or `http://localhost:3290`).
 
 ### Global Settings
 * **Location:** City name, Latitude, Longitude, Timezone (with search functionality)
@@ -215,6 +220,34 @@ Available modules: **News API**, **RSS Feeds**, **Weather**, **Email Inbox**, **
 ### Settings Storage
 * **Settings File:** `config.json` (auto-saved, gitignored)
 * **Reset:** "Reset All Settings" button restores factory defaults
+
+### Label Designer (optional)
+
+Install [phomymo](https://github.com/transcriptionstream/phomymo) to design one-off labels in the browser:
+
+```bash
+./scripts/fetch_label_designer.sh
+```
+
+The script clones phomymo into `vendor/phomymo` (gitignored). Restart faxomemo, and a **LABELS** link appears in the settings tab bar, which opens the designer at `/labels`.
+
+If you run faxomemo as a service, re-run `./faxomemo --install-daemon` after installing the designer. That copies `vendor/` into the install directory and restarts the service.
+
+Design the label, then press **Print on faxomemo**. The designer sends the label
+width in millimetres alongside the image, so faxomemo prints it at the size you
+designed rather than stretching it to the paper width. A label wider than the
+paper is clamped to the paper width.
+
+Do not use phomymo's own Print button: it connects over Web Bluetooth, and the M220 accepts one connection which faxomemo already holds.
+
+Printing requires an active settings login, because `POST /api/labels/print` is admin-protected. Log in on the settings page first, or the designer reports `Open faxomemo settings and log in first`.
+
+The designer picks the stock mode per print. A sized label such as 40x30 is
+die-cut, so faxomemo indexes to the gap between labels. Tick **Continuous** next
+to the print button for gapless tape. The device-wide `PC1_PHOMEMO_MEDIA_TYPE`
+still governs scheduled modules and is restored after each label.
+
+phomymo loads Tailwind, JsBarcode, jsPDF, pdf.js and QRCode from public CDNs, so the designer needs internet access to open.
 
 ### Local Validation Workflows
 For non-Pi development, use the local test and snapshot workflows:

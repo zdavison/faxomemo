@@ -8,8 +8,10 @@ import ScheduleModal from './components/ScheduleModal';
 import StatusMessage from './components/StatusMessage';
 import ResetSettingsButton from './components/ResetSettingsButton';
 import SettingsLogin from './components/SettingsLogin';
+import PrintingSwitch from './components/PrintingSwitch';
 import { useModuleTypes } from './hooks/useModuleTypes';
 import useTheme from './hooks/useTheme';
+import { TagIcon, ArrowSquareOutIcon } from '@phosphor-icons/react';
 import GitHubIcon from './assets/GitHubIcon';
 import BorderWidthIcon from './assets/BorderWidthIcon';
 import PreferencesIcon from './assets/PreferencesIcon';
@@ -44,6 +46,7 @@ function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [activeTab, setActiveTab] = useState('channels'); // 'general', 'channels'
+  const [labelDesigner, setLabelDesigner] = useState(null);
   const [showAddModuleModal, setShowAddModuleModal] = useState(null); // channel position or null
   const [showCreateUnassignedModal, setShowCreateUnassignedModal] = useState(false); // true/false for unassigned module creation
   const [showEditModuleModal, setShowEditModuleModal] = useState(null); // module ID or null
@@ -71,6 +74,22 @@ function App() {
     setSettings(settingsData);
     setModules(modulesData.modules || {});
   };
+
+  // The label designer is optional: scripts/fetch_label_designer.sh installs it.
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch('/api/system/label-designer')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.available) setLabelDesigner(data);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Check WiFi status on mount
   useEffect(() => {
@@ -824,6 +843,12 @@ function App() {
         </h1>
       </div>
 
+      <div className='mb-8'>
+        <PrintingSwitch
+          onError={(message) => setStatus({ type: 'error', message })}
+        />
+      </div>
+
       {/* Tabs */}
       <div className='flex gap-2 mb-8 border-b-2 border-dashed' style={{ borderColor: 'var(--color-border-main)' }} role='tablist' aria-label='Settings sections'>
         <button
@@ -878,6 +903,22 @@ function App() {
           <BorderWidthIcon className='w-4 h-4' aria-hidden='true' />
           CHANNELS
         </button>
+        {labelDesigner && (
+          <a
+            href={labelDesigner.url}
+            className='px-6 py-2 font-bold tracking-wider transition-all text-sm flex items-center gap-2 border-b-2 border-transparent ml-auto no-underline'
+            style={{ color: 'var(--color-text-muted)' }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = 'var(--color-text-main)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = 'var(--color-text-muted)';
+            }}>
+            <TagIcon className='w-4 h-4' aria-hidden='true' />
+            LABELS
+            <ArrowSquareOutIcon className='w-3 h-3' aria-hidden='true' />
+          </a>
+        )}
       </div>
 
       <div className='contents'>

@@ -68,6 +68,13 @@ class UsbTransport(Transport):
 
 
 class BluetoothTransport(Transport):
+    # A print-speed-throttled link stalls sends ~6s per 64KB drained, and a
+    # single sendall's timeout budget spans the WHOLE call — so send in chunks,
+    # each with a budget comfortably above the worst per-chunk stall.
+    CONNECT_TIMEOUT = 10.0
+    WRITE_TIMEOUT = 60.0
+    WRITE_CHUNK = 4096
+
     def __init__(self, mac: str, channel: int = 1):
         self.mac = (mac or "").strip()
         self.channel = channel
@@ -85,8 +92,9 @@ class BluetoothTransport(Transport):
             sock = socket.socket(
                 socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM
             )
-            sock.settimeout(10.0)
+            sock.settimeout(self.CONNECT_TIMEOUT)
             sock.connect((self.mac, self.channel))
+            sock.settimeout(self.WRITE_TIMEOUT)
             self._sock = sock
         except OSError as exc:
             if sock is not None:
@@ -102,7 +110,8 @@ class BluetoothTransport(Transport):
         if self._sock is None:
             raise TransportError("bluetooth transport not open")
         try:
-            self._sock.sendall(data)
+            for offset in range(0, len(data), self.WRITE_CHUNK):
+                self._sock.sendall(data[offset : offset + self.WRITE_CHUNK])
         except OSError as exc:
             self.close()
             raise TransportError(f"bluetooth write failed: {exc}") from exc

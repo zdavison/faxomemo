@@ -151,11 +151,11 @@ class PrinterDriver:
         print(f"[PRINT] {'━' * self.width}")
         self.lines_printed += 1
 
-    def print_image(self, image):
+    def print_image(self, image, align: str = "center"):
         """Simulates printing a generic PIL Image."""
         if not image:
             return
-        print(f"[PRINT] [IMAGE] Size: {image.size} Mode: {image.mode}")
+        print(f"[PRINT] [IMAGE] Size: {image.size} Mode: {image.mode} Align: {align}")
         # Could attempt ASCII art render here, but size/mode log is sufficient for mock
         self.lines_printed += int(image.height / 24) + 1  # Estimate lines
 

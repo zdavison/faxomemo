@@ -21,6 +21,13 @@ import re
 import shutil
 import sys
 import time
+import io
+from PIL import Image as PILImage
+from PIL import Image
+from PIL.Image import Image as ImageType
+
+import app.config as config_module
+from app.modules.print_webhook import prepare_image_for_print
 
 # Configure logging
 LOG_LEVEL_NAME = os.environ.get("PC1_LOG_LEVEL", "WARNING").upper()
@@ -64,10 +71,10 @@ def _parse_cors_origins() -> List[str]:
     return [
         "http://localhost",
         "http://localhost:5173",
-        "http://localhost:8000",
+        "http://localhost:3290",
         "http://127.0.0.1",
         "http://127.0.0.1:5173",
-        "http://127.0.0.1:8000",
+        "http://127.0.0.1:3290",
         "http://pc-1.local",
     ]
 
@@ -99,11 +106,14 @@ from app.config import (
 )
 from app.schedule_utils import (
     cron_matches_minute,
+    format_clock_time,
     humanize_cron,
+    latest_fire_time_today,
     legacy_schedule_to_rules,
     next_fire_times,
     normalize_schedule_rules,
 )
+from app.schedule_state import load_last_fired, record_fired
 
 # Import modules package to trigger auto-discovery and registration
 import app.modules  # noqa: F401
@@ -111,6 +121,7 @@ import app.modules  # noqa: F401
 # Import module registry for dynamic dispatch
 from app.module_registry import (
     get_module as get_module_def,
+    printer_for_config,
     get_all_modules,
     list_module_types,
     is_registered,
@@ -131,6 +142,7 @@ from app.hardware import (
     button,
     _is_raspberry_pi,
     try_begin_print_job,
+    printing_paused,
     reserve_hold_action,
     promote_hold_to_print_job,
     clear_print_reservation,
@@ -153,6 +165,14 @@ async def save_settings_background(settings_snapshot: Settings):
 email_polling_task = None
 scheduler_task = None
 task_monitor_task = None
+schedule_catchup_task = None
+# Boot prints (welcome/ready receipts) hold the printer, so catch-up waits.
+SCHEDULE_CATCHUP_START_DELAY_SECONDS = 20
+SCHEDULE_CATCHUP_RETRY_SECONDS = 30
+SCHEDULE_CATCHUP_MAX_ATTEMPTS = 20
+# Each probe of a powered-off Bluetooth printer blocks for its connect timeout.
+SCHEDULE_RECONNECT_CHECK_SECONDS = 120
+_schedule_catchup_running = False
 WEATHER_PREFETCH_MIN_LEAD_SECONDS = 120
 WEATHER_PREFETCH_MAX_LEAD_SECONDS = 240
 WEATHER_PREFETCH_RETRY_SECONDS = 30
@@ -441,6 +461,107 @@ async def _run_weather_prefetch_cycle(now: datetime) -> None:
                 )
 
 
+def _pending_schedule_catchups(now: datetime) -> List[tuple]:
+    """Channels whose most recent slot today came and went unprinted."""
+    last_fired = load_last_fired()
+    pending: List[tuple] = []
+
+    for pos, channel in settings.channels.items():
+        try:
+            missed = latest_fire_time_today(_channel_enabled_expressions(channel), now)
+        except Exception:
+            logger.warning("Could not evaluate catch-up for channel %s", pos, exc_info=True)
+            continue
+        if missed is None:
+            continue
+
+        previous = last_fired.get(pos)
+        try:
+            if previous is not None and previous >= missed:
+                continue
+        except TypeError:
+            # Naive/aware mismatch after a timezone change; treat as unprinted.
+            pass
+
+        pending.append((pos, missed))
+
+    return sorted(pending)
+
+
+async def run_startup_schedule_catchup():
+    """Catch up on missed schedules once the boot receipts are out of the way."""
+    await asyncio.sleep(SCHEDULE_CATCHUP_START_DELAY_SECONDS)
+    await _run_schedule_catchup()
+
+
+async def _run_schedule_catchup():
+    """Print schedules that came and went unprinted earlier today.
+
+    At most one print per channel: only the most recent missed slot, and
+    only from the current local day.
+    """
+    global _schedule_catchup_running
+    if printing_paused() or _schedule_catchup_running:
+        return
+
+    _schedule_catchup_running = True
+    try:
+        await _run_pending_schedule_catchups()
+    finally:
+        _schedule_catchup_running = False
+
+
+async def _run_pending_schedule_catchups():
+
+    try:
+        pending = _pending_schedule_catchups(current_datetime())
+    except Exception:
+        logger.exception("Schedule catch-up could not determine missed prints")
+        return
+
+    attempts = 0
+    while pending:
+        pos, missed = pending[0]
+
+        if not try_begin_print_job(debounce=False):
+            attempts += 1
+            if attempts >= SCHEDULE_CATCHUP_MAX_ATTEMPTS:
+                logger.info(
+                    "Giving up on schedule catch-up; printer stayed busy (%s channel(s) pending)",
+                    len(pending),
+                )
+                return
+            await asyncio.sleep(SCHEDULE_CATCHUP_RETRY_SECONDS)
+            continue
+
+        pending.pop(0)
+        logger.info(
+            "Catching up channel %s for missed slot %s",
+            pos,
+            missed.isoformat(timespec="minutes"),
+        )
+        try:
+            # Not scheduled=True: that path restricts weather to prefetched
+            # data, which a catch-up print never has.
+            await trigger_channel(pos, scheduled=False, catchup_for=missed)
+        except Exception:
+            logger.exception("Schedule catch-up print failed for channel %s", pos)
+            continue
+        record_fired(pos, missed)
+
+
+async def _catch_up_if_printer_returned(now: datetime) -> bool:
+    """Start a catch-up if a slot is pending and the printer answers again.
+
+    Returns whether the printer was probed.
+    """
+    if _schedule_catchup_running or not _pending_schedule_catchups(now):
+        return False
+    if await asyncio.to_thread(_printer_is_available):
+        asyncio.create_task(_run_schedule_catchup())
+    return True
+
+
 async def scheduler_loop():
     """
     Evaluate channel cron schedules once per minute.
@@ -449,6 +570,7 @@ async def scheduler_loop():
     timezone, so cron expressions are matched against local wall-clock time.
     """
     last_run_minute = ""
+    last_reconnect_check: Optional[datetime] = None
 
     while True:
         try:
@@ -463,6 +585,10 @@ async def scheduler_loop():
                 continue
 
             last_run_minute = current_time
+
+            # Leave due slots unrecorded while paused so resuming catches them up.
+            if printing_paused():
+                continue
 
             for pos, channel in settings.channels.items():
                 for expression in _channel_enabled_expressions(channel):
@@ -493,8 +619,21 @@ async def scheduler_loop():
                         )
                         continue
 
-                    await trigger_channel(pos, scheduled=True)
+                    try:
+                        await trigger_channel(pos, scheduled=True)
+                    except Exception:
+                        logger.exception("Scheduled print failed for channel %s", pos)
+                    else:
+                        record_fired(pos, now.replace(second=0, microsecond=0))
                     break  # One print per channel per minute is enough.
+
+            if (
+                last_reconnect_check is None
+                or (now - last_reconnect_check).total_seconds()
+                >= SCHEDULE_RECONNECT_CHECK_SECONDS
+            ):
+                if await _catch_up_if_printer_returned(now):
+                    last_reconnect_check = now
 
         except Exception:
             logger.exception("Scheduler loop encountered an unexpected error")
@@ -513,7 +652,7 @@ def on_button_press_threadsafe():
     """Callback that schedules the trigger on the main event loop."""
     global global_loop
 
-    if not try_begin_print_job(debounce=True):
+    if not try_begin_print_job(debounce=True, manual=True):
         return
 
     try:
@@ -565,7 +704,7 @@ def on_button_long_press_threadsafe():
     """Callback for long press (5 seconds) - opens quick actions menu."""
     global global_loop
 
-    if not promote_hold_to_print_job() and not try_begin_print_job(debounce=False):
+    if not promote_hold_to_print_job() and not try_begin_print_job(debounce=False, manual=True):
         return
 
     try:
@@ -970,11 +1109,17 @@ async def check_first_boot():
     # Cancel any active interactive mode
     exit_selection_mode()
 
-    # Wait for printer to be ready (applies to all boots)
-    await asyncio.sleep(2)
-
     # Check if marker exists first (this is fast, doesn't need thread pool)
     is_first_boot = not os.path.exists(marker_path)
+
+    import app.config as config_module
+
+    if not is_first_boot and config_module.SKIP_READY_PRINT:
+        logger.info("Skipping System Ready receipt (PC1_SKIP_READY_PRINT is set)")
+        return
+
+    # Wait for printer to be ready (applies to all boots)
+    await asyncio.sleep(2)
 
     def _do_print():
         """Synchronous function that does the actual printing work."""
@@ -1263,7 +1408,7 @@ async def factory_reset_trigger():
 def on_factory_reset_threadsafe():
     """Callback for factory reset press (15+ seconds)."""
     global global_loop
-    if not promote_hold_to_print_job() and not try_begin_print_job(debounce=False):
+    if not promote_hold_to_print_job() and not try_begin_print_job(debounce=False, manual=True):
         logger.info("Ignoring factory reset hold because printer is already busy.")
         return
 
@@ -1277,6 +1422,7 @@ def on_factory_reset_threadsafe():
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     global email_polling_task, scheduler_task, task_monitor_task, global_loop
+    global schedule_catchup_task
     from concurrent.futures import ThreadPoolExecutor
 
     # Capture the running loop
@@ -1319,6 +1465,7 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     email_polling_task = asyncio.create_task(email_polling_loop())
     scheduler_task = asyncio.create_task(scheduler_loop())
+    schedule_catchup_task = asyncio.create_task(run_startup_schedule_catchup())
     task_monitor_task = asyncio.create_task(task_watchdog())
 
     # Connect Slack workspaces for any configured Slack modules.
@@ -1343,7 +1490,12 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown - cancel all background tasks
-    for task in [email_polling_task, scheduler_task, task_monitor_task]:
+    for task in [
+        email_polling_task,
+        scheduler_task,
+        schedule_catchup_task,
+        task_monitor_task,
+    ]:
         if task:
             task.cancel()
             try:
@@ -1740,6 +1892,32 @@ async def reload_settings():
     asyncio.create_task(beeper_manager.reconcile())
 
     return {"message": "Settings reloaded from disk", "config": settings}
+
+
+# --- PRINTING SWITCH API ---
+
+
+class PrintingEnabledRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/printing", dependencies=[Depends(require_admin_access)])
+async def get_printing_enabled():
+    """Whether automatic prints are currently allowed."""
+    return {"enabled": bool(getattr(settings, "printing_enabled", True))}
+
+
+@app.post("/api/printing", dependencies=[Depends(require_admin_access)])
+async def set_printing_enabled(request: PrintingEnabledRequest):
+    """Turn automatic printing on or off. Manual prints are unaffected."""
+    was_enabled = bool(getattr(settings, "printing_enabled", True))
+    settings.printing_enabled = request.enabled
+    await save_settings_background(settings.model_copy(deep=True))
+
+    if request.enabled and not was_enabled:
+        asyncio.create_task(_run_schedule_catchup())
+
+    return {"enabled": request.enabled}
 
 
 # --- SYSTEM TIME API ---
@@ -4557,6 +4735,7 @@ def execute_module(module: ModuleInstance, *, scheduled: bool = False) -> bool:
     module_type = module.type
     config = module.config or {}
     module_name = module.name or module_type.upper()
+    module_printer = printer_for_config(printer, config)
 
     # Handle disabled modules
     if module_type == "off":
@@ -4567,24 +4746,24 @@ def execute_module(module: ModuleInstance, *, scheduled: bool = False) -> bool:
         # These require config to be parsed into specific types before calling
         if module_type == "webhook":
             action_config = WebhookConfig(**config)
-            webhook.run_webhook(action_config, printer, module_name)
+            webhook.run_webhook(action_config, module_printer, module_name)
             return True
 
         elif module_type == "text":
             text_config = TextConfig(**config)
-            text.format_text_receipt(printer, text_config, module_name)
+            text.format_text_receipt(module_printer, text_config, module_name)
             return True
 
         elif module_type == "calendar":
             cal_config = CalendarConfig(**config)
-            calendar.format_calendar_receipt(printer, cal_config, module_name)
+            calendar.format_calendar_receipt(module_printer, cal_config, module_name)
             return True
 
         elif module_type == "email":
             # Email has special handling - fetch emails first, then format
             emails = email_client.fetch_emails(config)
             email_client.format_email_receipt(
-                printer, messages=emails, config=config, module_name=module_name
+                module_printer, messages=emails, config=config, module_name=module_name
             )
             return True
 
@@ -4606,13 +4785,13 @@ def execute_module(module: ModuleInstance, *, scheduled: bool = False) -> bool:
                 execute_kwargs["scheduled"] = scheduled
             if execute_kwargs:
                 module_def.execute_fn(
-                    printer,
+                    module_printer,
                     config,
                     module_name,
                     **execute_kwargs,
                 )
             else:
-                module_def.execute_fn(printer, config, module_name)
+                module_def.execute_fn(module_printer, config, module_name)
             return True
         else:
             # Unknown module type
@@ -4635,10 +4814,18 @@ def execute_module(module: ModuleInstance, *, scheduled: bool = False) -> bool:
         return False
 
 
-async def trigger_channel(position: int, *, scheduled: bool = False):
+async def trigger_channel(
+    position: int,
+    *,
+    scheduled: bool = False,
+    catchup_for: Optional[datetime] = None,
+):
     """
     Executes all modules assigned to a specific channel position.
     Runs blocking printer operations in a thread pool to avoid blocking the event loop.
+
+    ``catchup_for`` marks the receipt as standing in for a schedule the
+    device slept through, and carries the slot it missed.
     """
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
@@ -4658,6 +4845,11 @@ async def trigger_channel(position: int, *, scheduled: bool = False):
         max_lines = getattr(settings, "max_print_lines", 200)
         if hasattr(printer, "reset_buffer"):
             printer.reset_buffer(max_lines)
+
+        if catchup_for is not None:
+            printer.print_caption(
+                f"Catch-up for {format_clock_time(catchup_for, settings.time_format)}"
+            )
 
         channel = settings.channels.get(position)
 
@@ -4848,7 +5040,7 @@ async def trigger_current_channel():
 @app.post("/action/trigger", dependencies=[Depends(require_admin_access)])
 async def manual_trigger():
     """Simulates pressing the big brass button."""
-    if not try_begin_print_job(debounce=False):
+    if not try_begin_print_job(debounce=False, manual=True):
         raise HTTPException(status_code=409, detail="Print already in progress")
 
     try:
@@ -4879,7 +5071,7 @@ async def print_channel(position: int, background_tasks: BackgroundTasks):
     if position < 1:
         raise HTTPException(status_code=400, detail="Position must be >= 1")
 
-    if not try_begin_print_job(debounce=False):
+    if not try_begin_print_job(debounce=False, manual=True):
         raise HTTPException(status_code=409, detail="Print already in progress")
 
     # Run print in background and return immediately
@@ -4901,7 +5093,7 @@ async def print_module(module_id: str, background_tasks: BackgroundTasks):
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
-    if not try_begin_print_job(debounce=False):
+    if not try_begin_print_job(debounce=False, manual=True):
         raise HTTPException(status_code=409, detail="Print already in progress")
 
     # Run print in background and return immediately
@@ -5376,7 +5568,160 @@ async def captive_networkmanager():
     return _captive_portal_response(content="NetworkManager is online\n")
 
 
+LABEL_DESIGNER_URL = "/labels/"
+LABEL_BRIDGE_SCRIPT = Path(__file__).parent / "static" / "labels_bridge.js"
+LABEL_BRIDGE_TAG = '<script src="faxomemo-bridge.js"></script>'
+LABEL_PRINT_MAX_HEIGHT_DOTS = 4096
+LABEL_WIDTH_HEADER = "X-Label-Width-Mm"
+LABEL_CONTINUOUS_HEADER = "X-Label-Continuous"
+LABEL_MAX_WIDTH_MM = 300.0
+
+
+def label_designer_dir() -> Optional[Path]:
+    """Return the vendored phomymo web root, or None when it is not installed."""
+    web_dir = _get_project_root() / "vendor" / "phomymo" / "src" / "web"
+    return web_dir if (web_dir / "index.html").exists() else None
+
+
+def label_designer_index_html() -> str:
+    """Return phomymo's index page with the faxomemo print bridge appended."""
+    html = (label_designer_dir() / "index.html").read_text(encoding="utf-8")
+    if "</body>" in html:
+        return html.replace("</body>", f"{LABEL_BRIDGE_TAG}</body>", 1)
+    return html + LABEL_BRIDGE_TAG
+
+
+@app.get("/api/system/label-designer")
+async def get_label_designer_status():
+    return {"available": label_designer_dir() is not None, "url": LABEL_DESIGNER_URL}
+
+
+def _label_width_mm(request: Request) -> float:
+    """Read the designed label width. Without it faxomemo cannot size the print."""
+    raw = (request.headers.get(LABEL_WIDTH_HEADER) or "").strip()
+    try:
+        width_mm = float(raw)
+    except ValueError:
+        width_mm = 0.0
+
+    if not 1.0 <= width_mm <= LABEL_MAX_WIDTH_MM:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{LABEL_WIDTH_HEADER} must be the label width in millimetres, "
+                f"between 1 and {LABEL_MAX_WIDTH_MM:g}."
+            ),
+        )
+    return width_mm
+
+
+def _resize_label_to_physical_width(image: "ImageType", width_mm: float) -> "ImageType":
+    """Render the label at its designed size rather than stretching it to the paper.
+
+    The designer exports at its own pixel scale, so pixel width says nothing about
+    how wide the label should print. Millimetres do.
+    """
+    dots_per_mm = config_module.PAPER_WIDTH_DOTS / config_module.PAPER_WIDTH_MM
+    width_dots = min(round(width_mm * dots_per_mm), config_module.PAPER_WIDTH_DOTS)
+    height_dots = min(
+        max(1, round(image.height * width_dots / image.width)),
+        LABEL_PRINT_MAX_HEIGHT_DOTS,
+    )
+    return image.resize((width_dots, height_dots), Image.Resampling.LANCZOS)
+
+
+def _label_media_type(request: Request) -> int:
+    """Die-cut stock needs gap indexing, so the designer's stock choice sets the mode."""
+    raw = request.headers.get(LABEL_CONTINUOUS_HEADER)
+    raw = "false" if raw is None else raw.strip().lower()
+    if raw not in ("true", "false"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{LABEL_CONTINUOUS_HEADER} must be 'true' or 'false'.",
+        )
+    return (
+        config_module.MEDIA_TYPE_CONTINUOUS
+        if raw == "true"
+        else config_module.MEDIA_TYPE_GAP
+    )
+
+
+def _print_label_image(image: "ImageType", media_type: int) -> None:
+    # Scheduled modules keep printing on whatever stock the device is set up for,
+    # so the label's mode applies to this job only.
+    previous_media_type = getattr(printer, "media_type", None)
+    if previous_media_type is not None:
+        printer.media_type = media_type
+
+    try:
+        max_lines = getattr(settings, "max_print_lines", 200)
+        if hasattr(printer, "reset_buffer"):
+            printer.reset_buffer(max_lines)
+        printer.print_image(image, align="left")
+        if hasattr(printer, "flush_buffer"):
+            printer.flush_buffer()
+    finally:
+        if previous_media_type is not None:
+            printer.media_type = previous_media_type
+
+
+@app.post("/api/labels/print", dependencies=[Depends(require_admin_access)])
+async def print_label(request: Request):
+    """Print a label rendered by the designer. The body is the raster image itself."""
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if not content_type.startswith("image/") or content_type == "image/svg+xml":
+        raise HTTPException(
+            status_code=400, detail="Send a raster image such as PNG or JPEG."
+        )
+
+    body = await request.body()
+    try:
+        image = PILImage.open(io.BytesIO(body))
+        image.load()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400, detail="Unsupported or invalid image."
+        ) from exc
+
+    prepared = _resize_label_to_physical_width(image, _label_width_mm(request))
+    media_type = _label_media_type(request)
+
+    if not try_begin_print_job(debounce=False, manual=True):
+        raise HTTPException(status_code=409, detail="Print already in progress")
+
+    try:
+        await asyncio.to_thread(_print_label_image, prepared, media_type)
+    finally:
+        clear_print_reservation(clear_hold=False)
+
+    return {"status": "ok"}
+
+
 # --- STATIC FILES (FRONTEND) ---
+
+# phomymo is optional: scripts/fetch_label_designer.sh clones it into vendor/.
+# The explicit routes must be registered before the mount so they win.
+_label_designer_dir = label_designer_dir()
+if _label_designer_dir:
+
+    @app.get("/labels", include_in_schema=False)
+    async def redirect_to_label_designer():
+        # phomymo references its assets relatively, so it needs the trailing slash.
+        return RedirectResponse(LABEL_DESIGNER_URL)
+
+    @app.get("/labels/", include_in_schema=False)
+    async def serve_label_designer():
+        return HTMLResponse(label_designer_index_html())
+
+    @app.get("/labels/faxomemo-bridge.js", include_in_schema=False)
+    async def serve_label_bridge():
+        return FileResponse(LABEL_BRIDGE_SCRIPT, media_type="text/javascript")
+
+    app.mount(
+        "/labels",
+        StaticFiles(directory=str(_label_designer_dir), html=True),
+        name="labels",
+    )
 
 # Mount the built React app
 # Ensure 'web/dist' exists (run 'npm run build' in web/ directory first)
@@ -5409,12 +5754,14 @@ if os.path.exists("web/dist"):
     # Serve index.html for the root and any client-side routes
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        # If path starts with api/, let it fall through to API routes
-        # Fonts are handled by the mount above, so they won't reach here
+        # Fonts and /labels are handled by the mounts above, so they won't reach here
+        # unless the label designer is not installed, in which case /labels is a 404.
         if (
             full_path.startswith("api/")
             or full_path.startswith("docs")
             or full_path.startswith("openapi.json")
+            or full_path == "labels"
+            or full_path.startswith("labels/")
         ):
             raise HTTPException(status_code=404, detail="Not found")
 

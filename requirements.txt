@@ -24,3 +24,9 @@ aiohttp
 html5-parser
 lxml
 mechanize
+chess
+
+# Crossword module: downloads daily minis from outlets (pinned; outlets change formats)
+# Pinned to master: the 2025.10.14 release predates AmuseLabs' picker/token
+# change and fails for LA Times Mini ("Unable to find puzzles data").
+xword-dl @ git+https://github.com/thisisparker/xword-dl.git@0898e9cd762bf6c6cdcec9d2e5234058023b092d

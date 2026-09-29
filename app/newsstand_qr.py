@@ -71,7 +71,7 @@ def _local_ip() -> str:
 
 
 def device_base_url() -> str:
-    port = os.environ.get("PORT", "8000")
+    port = os.environ.get("PORT", "3290")
     return f"http://{_local_ip()}:{port}"
 
 
