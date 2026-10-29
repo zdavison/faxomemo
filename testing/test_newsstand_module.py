@@ -77,7 +77,7 @@ def test_loader_does_not_leave_calibre_stubs_in_sys_modules():
         ("https://raw.githubusercontent.com/z/my-recipes/main/berliner.recipe", "recipe_url"),
         ("http://example.com/foo.recipe", "recipe_url"),
         ("https://example.com/foo.recipe?ref=main", "recipe_url"),
-        ("/home/z/recipes/taz.recipe", "path"),
+        ("/srv/recipes/taz.recipe", "path"),
         ("recipes/taz.recipe", "path"),
         ("taz.recipe", "path"),
     ],

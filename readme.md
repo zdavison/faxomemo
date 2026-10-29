@@ -2,6 +2,10 @@
 
 **A small, self-hosted thermal printer for news, weather, puzzles, email, and more.**
 
+> **faxomemo** is a fork of [PC-1 (paper-console)](https://github.com/travmiller/paper-console) by Travis Miller. It adds a driver for the Phomemo M220 printer over USB or Bluetooth, and it adds more modules.
+>
+> **New to faxomemo?** Read the [Getting Started guide](docs/getting-started.md). The guide assumes no technical knowledge.
+
 ---
 
 * **No screens:** output is physical thermal paper.
@@ -550,3 +554,14 @@ Legend: `[X]` = Used, `[ ]` = Empty. The header is 2 pins wide.
 * **Weather Wrong:** Check `config.json` Lat/Long via UI location search feature
 
 ---
+
+## 7. Thanks
+
+- **[Travis Miller (travmiller)](https://github.com/travmiller)** made [PC-1 (paper-console)](https://github.com/travmiller/paper-console). faxomemo starts from PC-1. The design, the module system and most of the code come from PC-1. Thank you, Travis, and thank you to all PC-1 contributors.
+- **[transcriptionstream](https://github.com/transcriptionstream)** made [phomymo](https://github.com/transcriptionstream/phomymo), the browser label designer for Phomemo printers. faxomemo embeds phomymo as the optional label designer.
+
+## 8. License
+
+faxomemo is free software under the [MIT License](LICENSE).
+
+faxomemo uses third-party libraries, fonts, icons and data under their own licenses. Some Python dependencies use the GPL. Read [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the full list.

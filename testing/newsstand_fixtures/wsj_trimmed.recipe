@@ -2,6 +2,10 @@
 # A faithful trim of calibre's wsj_free.recipe: same parse_index GraphQL flow,
 # obfuscated-article fetch through archive.today, cleanup dicts with lambdas,
 # and preprocess_html with walrus operators. Fetches are mocked in tests.
+#
+# License: GPL-3.0. This file is derived from calibre's recipes/wsj_free.recipe
+# (https://github.com/kovidgoyal/calibre), which is under the GPL-3.0. The rest
+# of faxomemo is under the MIT License. See THIRD_PARTY_NOTICES.md.
 import json
 import time
 from urllib.parse import quote, urlencode
